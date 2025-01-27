@@ -1,0 +1,15 @@
+# Ignore Python bytecode and virtual environments
+__pycache__/
+*.pyc
+venv/
+
+# 
+.git/
+.idea/
+
+figures/*
+state_dict/*
+
+# Ignore build artifacts
+/dist
+/build
