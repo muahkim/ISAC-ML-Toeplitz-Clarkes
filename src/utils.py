@@ -692,3 +692,11 @@ def CRLB(N0, h_s_a, x, tau_s_a, T, eps=1e-6):
     CRLB = torch.sum(J_aa)
     return CRLB
 
+def snr_db2sigma(train_snr):
+    return 10**(-train_snr*1.0/20)
+
+def snr_sigma2db(train_sigma):
+    try:
+        return -20.0 * math.log(train_sigma, 10)
+    except:
+        return -20.0 * torch.log10(train_sigma)
