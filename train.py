@@ -26,6 +26,7 @@ ebn0 = 15
 
 ## If you want to load a model trained previously.
 LOADMODEL = False
+milestone_to_load = None
 
 ## Communication and coding parameters
 k = 2  # math.log2(M)
@@ -77,10 +78,7 @@ file_tag = f"_M{M:d}N{n:d}_{TRAINING_SNR}dB_f{f_dopp_norm:.3f}_gamma{loss_ratio_
 # choose encoder and decoder.
 
 encoder = models.Encoder_1h_n2_deeper_ee(M, n_r).to(device)
-if LOADMODEL:  ## To load the model if necessary.
-    encoder.load_state_dict(torch.load(path + 'encoder' + file_tag + '.pt'))
-    encoder.eval()
-print(encoder)
+
 '''
 encoder_ML = import_enc(args)
 
@@ -113,13 +111,21 @@ encoder = encoder.to(device)
 '''
 
 
-for count, lr in enumerate(lr_seq):
-    t_conf = trainer.TrainerConfig(M=M, k=k, n=n, n_r=n_r, rate=rate, f_dopp_norm=f_dopp_norm, noise_std_c=noise_std,
-                                   P=P, T=T, tau_max=tau_max, noise_std_r=noise_std,
-                                   max_epochs=ep_seq[count], dataset_size=dataset_size, is_conv=False,
-                                   batch_size=batch_size, lr_enc=lr, binary=binary,
-                                   loss_ratio_c_to_r=loss_ratio_c_to_r, only_groundtruth=only_groundtruth, auto_save=auto_save,
-                                   file_tag=file_tag, path=path, device=device,
-                                   args=args)
-    t_joint = trainer.Trainer(encoder, t_conf, binary=binary)
-    _, _ = t_joint.train()
+
+t_conf = trainer.TrainerConfig(M=M, k=k, n=n, n_r=n_r, rate=rate, f_dopp_norm=f_dopp_norm, noise_std_c=noise_std,
+                               P=P, T=T, tau_max=tau_max, noise_std_r=noise_std, epoch_loaded = milestone_to_load,
+                               max_epochs=ep_seq, dataset_size=dataset_size, is_conv=False,
+                               batch_size=batch_size, lr_enc=lr_seq, binary=binary,
+                               loss_ratio_c_to_r=loss_ratio_c_to_r, only_groundtruth=only_groundtruth, auto_save=auto_save,
+                               file_tag=file_tag, path=path, device=device,
+                               args=args)
+t_joint = trainer.Trainer(encoder, t_conf, binary=binary)
+
+if LOADMODEL:  ## To load the model if necessary.
+    t_joint.load(milestone=milestone_to_load)
+    #encoder.load_state_dict(torch.load(path + 'encoder' + file_tag + '.pt'))
+    #encoder.eval()
+print(encoder)
+
+
+_, _ = t_joint.train()

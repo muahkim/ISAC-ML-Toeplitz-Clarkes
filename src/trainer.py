@@ -29,13 +29,14 @@ class TrainerConfig:
     noise_std_r = 1
 
     dataset_size = 10 ** 6
-    max_epochs = 10
+    max_epochs = [10]
     batch_size = 512
     num_workers = 0  # for DataLoader
-    lr = 1e-3
+    lr_enc = [1e-3]
     loss_ratio_c_to_r = 1.
     only_groundtruth = False
 
+    epoch_loaded = None
     auto_save = True
     file_tag = "test"
     path = os.getcwd()
@@ -57,6 +58,10 @@ class TrainerConfig:
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
             setattr(self, k, v)
+
+        # Sanity Check
+        assert len(self.lr_enc) == len(self.max_epochs), "The length of lr and max_epochs should be the same."
+
         self.cov = utils_standard_codec.Rayleigh_covariance_generator(self.n, self.f_dopp_norm, dtype_cov=torch.cfloat)
         plt.imshow(self.cov.real, cmap='hot')  # , interpolation='nearest')
         plt.title(r'Covariance, $\bar{f}_D=' + str(self.f_dopp_norm) + '$')
@@ -105,6 +110,7 @@ def forward_pass(encoder, channel, decoder, labels, config):
     return m_d, x_, y_c, y_r, h_c
 
 
+
 class Trainer:
     def __init__(self, enc, config, binary=False):
         self.enc = enc
@@ -129,12 +135,26 @@ class Trainer:
                                  N0= 2 * config.noise_std_r ** 2, tau_max=config.tau_max)
         self.MLDetector = partial(utils.ML_det_Rayleigh_ncd, cov_h=config.cov, std_z=config.noise_std_c)
 
+    def save(self, path_save=None, milestone=None):
+        if path_save is None:
+            assert milestone is not None, "Must specify milestone for saving"
+            path_save = self.config.path_state_dict + '/encoder' + self.config.file_tag + f'-{milestone}.pt'
+        torch.save(self.enc.state_dict(), path_save)
+
+    def load(self, path_load=None, milestone=None):
+        if path_load is None:
+            assert milestone is not None, "Must specify milestone for loading"
+            path_load = self.config.path_state_dict + '/encoder' + self.config.file_tag + f'-{milestone}.pt'
+        elif path_load[-3] != '.pt':
+            path_load += '/encoder' + self.config.file_tag + f'-{milestone}.pt'
+
+        self.enc.load_state_dict(torch.load(path_load))
+        self.enc.eval()
+        self.config.epoch_loaded = milestone - 1
+
     def train(self):
         enc, config, device = self.enc, self.config, self.device
         loss_CE = nn.CrossEntropyLoss()
-
-
-        optimizer_enc = torch.optim.NAdam(enc.parameters(), lr=config.lr)
 
         M = config.M
         k = int(math.log2(M))
@@ -146,9 +166,9 @@ class Trainer:
         def run_epoch():
             loader = DataLoader(self.train_dataset, shuffle=True, pin_memory=False, batch_size=config.batch_size)
             loss_batch, loss_batch_c, loss_batch_r, batch_BER, batch_SER = [], [], [], [], []
-
             pbar = tqdm(enumerate(loader), total=len(loader), mininterval=0.5)
 
+            optimizer_enc = torch.optim.NAdam(enc.parameters(), lr=config.lr_enc[lr_count])
             for it, m in pbar:
                 bs = m.shape[0]
                 if self.binary:
@@ -235,21 +255,27 @@ class Trainer:
 
                 if it % 100 == 0:
                     pbar.set_description(
-                        f"epoch {epoch + 1}: loss c, loss r, sum: {np.mean(loss_batch_c):.2e}, {np.mean(loss_batch_r):.2e}, {np.mean(loss_batch):.2e}")
+                        f"epoch {epoch_global + 1}: loss c, loss r, sum: {np.mean(loss_batch_c):.2e}, {np.mean(loss_batch_r):.2e}, {np.mean(loss_batch):.2e}")
             #print(f"epoch {epoch + 1}: BER {np.mean(batch_BER):.2e} FER {np.mean(batch_SER):.2e} CRLB:{np.mean(loss_batch_r):.2e}")
 
-
             if config.auto_save:
-                torch.save(enc.state_dict(), config.path_state_dict + '/encoder' + config.file_tag + f'-{epoch+1}.pt')
+                self.save(milestone = epoch_global + 1)
             if config.n <= 10:
-                Constellation_Enc(enc, M, path=f"{config.path_figures}/Constellation{config.file_tag}-{epoch+1}.pdf", title=f"{epoch+1} epochs",is_emb=False)
+                Constellation_Enc(enc, M, path=f"{config.path_figures}/Constellation{config.file_tag}-{epoch_global+1}.pdf", title=f"{epoch_global+1} epochs",is_emb=False)
 
             return #np.mean(batch_BER), np.mean(batch_SER)
 
-        for epoch in range(config.max_epochs):
-            run_epoch()
-            #BER_ep.append(ber_tmp)
-            #SER_ep.append(ser_tmp)
+        if self.config.epoch_loaded is None:
+            epoch_global = 0
+        else:
+            epoch_global = self.config.epoch_loaded
+
+        for lr_count, epoch_per_lr in enumerate(config.max_epochs):
+            for epoch in range(epoch_per_lr):
+                run_epoch()
+                #BER_ep.append(ber_tmp)
+                #SER_ep.append(ser_tmp)
+                epoch_global += 1
 
         return None, None # BER_ep, SER_ep
 
