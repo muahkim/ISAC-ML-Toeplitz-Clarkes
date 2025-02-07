@@ -1,14 +1,9 @@
-import math
-import logging
-import random
-import os
-from functools import partial
 
+import os
+from datetime import datetime
 from tqdm import tqdm
-import numpy as np
 import matplotlib.pyplot as plt
 
-import torch
 import torch.nn as nn
 from torch.utils.data.dataloader import DataLoader
 from torch.nn import functional as F
@@ -23,6 +18,7 @@ class TrainerConfig:
     # optimization parameters
     M = 16
     n = 7
+    n_r = n*2
     rate = math.log2(M) / n
     cov = torch.eye(n, n, dtype=torch.cfloat)
     f_dopp_norm = 0.1
@@ -38,6 +34,7 @@ class TrainerConfig:
     num_workers = 0  # for DataLoader
     lr = 1e-3
     loss_ratio_c_to_r = 1.
+    only_groundtruth = False
 
     auto_save = True
     file_tag = "test"
@@ -55,6 +52,7 @@ class TrainerConfig:
         device = "cpu"
 
     writer = None
+    args = None
 
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
@@ -66,11 +64,12 @@ class TrainerConfig:
         plt.show()
 
         # Generate a random number for the folder name
-        folder_name = str(np.random.randint(100000, 999999))  # Adjust range as needed
+        #folder_name = str(np.random.randint(100000, 999999))  # Adjust range as needed
+        self.timestamp = datetime.now().strftime("%m%d%H%M%S")
 
         # Define the folder path (creates in the current directory)
-        self.path_state_dict = os.path.join(os.getcwd() + '/state_dict', self.file_tag[1:] + '_' + folder_name)
-        self.path_figures = os.path.join(os.getcwd() + '/figures', self.file_tag[1:] + '_' + folder_name)
+        self.path_state_dict = os.path.join(os.getcwd() + '/state_dict', self.file_tag[1:] + '_' + self.timestamp)
+        self.path_figures = os.path.join(os.getcwd() + '/figures', self.file_tag[1:] + '_' + self.timestamp)
 
         # Create the directory if it doesn't exist
         os.makedirs(self.path_state_dict, exist_ok=True)
@@ -107,12 +106,16 @@ def forward_pass(encoder, channel, decoder, labels, config):
 
 
 class Trainer:
-    def __init__(self, enc, config, one_hot=True, is_2d=False):
+    def __init__(self, enc, config, binary=False):
         self.enc = enc
-        self.train_dataset = np.random.randint(config.M, size=config.dataset_size)
-        self.config = config
-        self.one_hot = one_hot
 
+        if binary:
+            self.train_dataset = 2 *( np.random.randint( 2, size=(config.dataset_size, config.k, 1) ) - 0.5)
+        else: # one hot encoded data
+            self.train_dataset = np.random.randint(config.M, size=config.dataset_size)
+
+        self.config = config
+        self.binary = binary
         self.is_conv = config.is_conv
         self.is_emb = config.is_emb
 
@@ -121,7 +124,7 @@ class Trainer:
             self.device = torch.cuda.current_device()
 
         self.channel_c = partial(ch_corr_Rayleigh_by_cov, cov=config.cov,
-                                 noise_std=config.noise_std_c, device=self.device)
+                                 noise_std=config.noise_std_c, device=self.device, decomposition_method='eigenvector')
         self.channel_s = partial(Toeplitz_channel, P=config.P, T=config.T,
                                  N0= 2 * config.noise_std_r ** 2, tau_max=config.tau_max)
         self.MLDetector = partial(utils.ML_det_Rayleigh_ncd, cov_h=config.cov, std_z=config.noise_std_c)
@@ -129,11 +132,14 @@ class Trainer:
     def train(self):
         enc, config, device = self.enc, self.config, self.device
         loss_CE = nn.CrossEntropyLoss()
+
+
         optimizer_enc = torch.optim.NAdam(enc.parameters(), lr=config.lr)
 
         M = config.M
         k = int(math.log2(M))
         n = config.n
+        n_r = config.n_r
 
         BER_ep, SER_ep = [], []
 
@@ -144,30 +150,34 @@ class Trainer:
             pbar = tqdm(enumerate(loader), total=len(loader), mininterval=0.5)
 
             for it, m in pbar:
-                bs = m.size(0)
-                labels = m.reshape((-1, 1)).to(device)
-                
-                if self.is_conv:
-                    m_tmp = torch.eye(M).to(device)
-                    table = torch.view_as_complex(enc(m_tmp[:, None, :]).view(M, n, 2)).to(device).detach()
-                elif self.is_emb:
-                    m_tmp = torch.arange(M).to(device)
-                    table = torch.view_as_complex(enc(m_tmp).view(M, n, 2)).to(device).detach()
-                else:
-                    m_tmp = torch.eye(M).to(device)
-                    table = torch.view_as_complex(enc(m_tmp).view(M, n, 2)).to(device).detach()
+                bs = m.shape[0]
+                if self.binary:
+                    m = m.float().to(device)
+                else: # one-hot encoded
+                    labels = m.reshape((-1, 1)).to(device)
+                    if self.is_conv:
+                        m_tmp = torch.eye(M).to(device)
+                        table = torch.view_as_complex(enc(m_tmp[:, None, :]).view(M, n, 2)).to(device).detach()
+                    elif self.is_emb:
+                        m_tmp = torch.arange(M).to(device)
+                        table = torch.view_as_complex(enc(m_tmp).view(M, n, 2)).to(device).detach()
+                    else:
+                        m_tmp = torch.eye(M).to(device)
+                        table = torch.view_as_complex(enc(m_tmp).view(M, n, 2)).to(device).detach()
+
+                    # Forward Pass:
+                    m = F.one_hot(labels.long(), num_classes=M)
+                    m = m.float().reshape(-1, M)
 
                 enc.zero_grad()
 
-                # Forward Pass:
-                m = F.one_hot(labels.long(), num_classes=M)
-                m = m.float().reshape(-1, M)
                 if self.is_conv:
                     x = enc(m[:, None, :])
                 elif self.is_emb:
                     x = enc(labels.squeeze())
                 else:
                     x = enc(m)  # each sample is a 2n-dimensional real vector
+
                 x_ = x.view(-1, n, 2)  # each sample is a n x 2 tensor.
                 x_ = torch.view_as_complex(x_)  # each sample is a n-dimensional complex vector
 
@@ -175,12 +185,17 @@ class Trainer:
                 y_c, h_c = self.channel_c(x_)
 
                 # Maximum-Likelihood Decoding
-                table = table.view(M, n)
-                prob, m_hat = self.MLDetector(y_c, table)
+                if config.only_groundtruth:
+                    loglikelihood, _ = self.MLDetector(y_c, x_, only_groundtruth = config.only_groundtruth) # likelihood of the correct message.
+                    loss_c = - loglikelihood # equivalent to the binary cross entropy.
+                else:
+                    table = table.view(M, n)
+                    loglikelihood, m_hat = self.MLDetector(y_c, table, only_groundtruth = config.only_groundtruth)
 
-                # Backward pass for decoder
-                loss_c = loss_CE(prob, labels.long().squeeze(1))
+                    # Backward pass for decoder
+                    loss_c = loss_CE(loglikelihood, labels.long().squeeze(1))
                 loss_c = loss_c.mean()
+
 
                 # Sensing
                 y_r, h_s_a, tau_s_a = self.channel_s(x_)
@@ -199,6 +214,7 @@ class Trainer:
                 loss_batch_r.append(loss_r.item())
                 loss_batch.append(loss.item())
 
+                '''
                 bool_sym = torch.ne(torch.squeeze(labels).int(), torch.squeeze(m_hat).int())
                 SER_tmp = torch.sum(bool_sym) / m_hat.shape[0]
 
@@ -210,24 +226,32 @@ class Trainer:
 
                 batch_BER.append(BER_tmp.item())
                 batch_SER.append(SER_tmp.item())
+                
+                if it % 100 == 0:
+                    pbar.set_description(
+                        f"epoch {epoch + 1}: loss c, loss r, sum: {np.mean(loss_batch_c):.2e}, {np.mean(loss_batch_r):.2e}, {np.mean(loss_batch):.2e}")
+
+                '''
 
                 if it % 100 == 0:
                     pbar.set_description(
                         f"epoch {epoch + 1}: loss c, loss r, sum: {np.mean(loss_batch_c):.2e}, {np.mean(loss_batch_r):.2e}, {np.mean(loss_batch):.2e}")
-            print(f"epoch {epoch + 1}: BER {np.mean(batch_BER):.2e} FER {np.mean(batch_SER):.2e} CRLB:{np.mean(loss_batch_r):.2e}")
+            #print(f"epoch {epoch + 1}: BER {np.mean(batch_BER):.2e} FER {np.mean(batch_SER):.2e} CRLB:{np.mean(loss_batch_r):.2e}")
+
 
             if config.auto_save:
                 torch.save(enc.state_dict(), config.path_state_dict + '/encoder' + config.file_tag + f'-{epoch+1}.pt')
-            Constellation_Enc(enc, M, path=f"{config.path_figures}/Constellation{config.file_tag}-{epoch+1}.pdf", title=f"{epoch+1} epochs",is_emb=False)
+            if config.n <= 10:
+                Constellation_Enc(enc, M, path=f"{config.path_figures}/Constellation{config.file_tag}-{epoch+1}.pdf", title=f"{epoch+1} epochs",is_emb=False)
 
-            return np.mean(batch_BER), np.mean(batch_SER)
+            return #np.mean(batch_BER), np.mean(batch_SER)
 
         for epoch in range(config.max_epochs):
-            ber_tmp, ser_tmp = run_epoch()
-            BER_ep.append(ber_tmp)
-            SER_ep.append(ser_tmp)
+            run_epoch()
+            #BER_ep.append(ber_tmp)
+            #SER_ep.append(ser_tmp)
 
-        return BER_ep, SER_ep
+        return None, None # BER_ep, SER_ep
 
     def train_ro(self, loss_type='MSE'): # training for radar-only, with the MMSE estimator.
         enc, config, device = self.enc, self.config, self.device

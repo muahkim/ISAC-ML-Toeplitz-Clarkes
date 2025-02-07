@@ -292,4 +292,10 @@ def Rayleigh_covariance_generator(N, f_dopp_norm, dtype_cov=torch.cfloat):
             cov[i,j] = scipy.special.jv(0, arg * (j-i))
             if i is not j:
                 cov[i,j] = cov[i,j] - 2**(-10)
+
+
+    #cov += 1e-6 * torch.eye(N, dtype=dtype_cov)
+
+    #cov = (cov + cov.T.conj()) / 2  # Ensure Hermitian symmetry
+
     return cov

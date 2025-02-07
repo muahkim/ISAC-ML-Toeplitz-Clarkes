@@ -15,7 +15,7 @@ from scipy.integrate import quad_vec
 import scipy.integrate as spi
 
 
-def ch_corr_Rayleigh_by_cov(x, cov, noise_std, device):
+def ch_corr_Rayleigh_by_cov(x, cov, noise_std, device, decomposition_method='cholesky'):
     x = x.to(device)
     bs = x.size(0)
     n = x.size(1)
@@ -26,12 +26,20 @@ def ch_corr_Rayleigh_by_cov(x, cov, noise_std, device):
     h = h[:, :, None]
     # Compute a matrix A such that A*A^H = Cov.
 
-    # Compute the Cholesky decomposition.
-    A = torch.linalg.cholesky(cov, upper=False)  # torch.cholesky(Cov, upper=False)
-    # print(torch.mm(A, A.conj().T))
-    # print(cov)
+    if decomposition_method == 'cholesky':
+        # Compute the Cholesky decomposition.
+        A = torch.linalg.cholesky(cov, upper=False)  # torch.cholesky(Cov, upper=False)
+        A = A[None, :, :].repeat(bs, 1, 1).to(device)
+    elif decomposition_method == 'eigenvector':
+        # Eigen-decomposition
+        eigvals, eigvecs = torch.linalg.eigh(cov)
 
-    A = A[None, :, :].repeat(bs, 1, 1).to(device)
+        # Ensure eigenvalues are non-negative (clip small negatives due to numerical errors)
+        eigvals = torch.clamp(eigvals, min=1e-6)
+
+        # Generate correlated Gaussian variables
+        A = eigvecs @ torch.diag(eigvals.sqrt()).to(torch.cfloat)
+        A = A.repeat(bs, 1, 1).to(device)
 
     # Correlated channel matrices h = Ah,  A[n,n] h[n, 1]
     h = torch.bmm(A, h)

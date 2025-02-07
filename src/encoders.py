@@ -800,3 +800,45 @@ def turbo_enc(X_train_raw, args, p_array):
 
     return torch.from_numpy(np.array(x_code)).type(torch.FloatTensor)
 
+
+#######################################################
+# To import the encoders defined above
+#######################################################
+
+def import_enc(args):
+    # choose encoder
+
+    if args.encoder == 'TurboAE_rate3_rnn':
+        from encoders import ENC_interRNN as ENC
+
+    elif args.encoder in ['TurboAE_rate3_cnn', 'TurboAE_rate3_cnn_dense']:
+        from encoders import ENC_interCNN as ENC
+
+    elif args.encoder == 'turboae_2int':
+        from encoders import ENC_interCNN2Int as ENC
+
+    elif args.encoder == 'rate3_cnn':
+        from encoders import CNN_encoder_rate3 as ENC
+
+    elif args.encoder in ['TurboAE_rate3_cnn2d', 'TurboAE_rate3_cnn2d_dense']:
+        from encoders import ENC_interCNN2D as ENC
+
+    elif args.encoder == 'TurboAE_rate3_rnn_sys':
+        from encoders import ENC_interRNN_sys as ENC
+
+    elif args.encoder == 'TurboAE_rate2_rnn':
+        from encoders import ENC_turbofy_rate2 as ENC
+
+    elif args.encoder == 'TurboAE_rate2_cnn':
+        from encoders import ENC_turbofy_rate2_CNN as ENC  # not done yet
+
+    elif args.encoder in ['Turbo_rate3_lte', 'Turbo_rate3_757']:
+        from encoders import ENC_TurboCode as ENC          # DeepTurbo, encoder not trainable.
+
+    elif args.encoder == 'rate3_cnn2d':
+        from encoders import ENC_CNN2D as ENC
+
+    else:
+        print('Unknown Encoder, stop')
+
+    return ENC

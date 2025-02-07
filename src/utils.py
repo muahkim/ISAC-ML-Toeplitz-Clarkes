@@ -267,60 +267,71 @@ def complex_multivariate_Gaussian2(x, cov):
     return torch.div(num, denom).reshape(-1, M)  # [batch_size, M]
 
 
-def complex_multivariate_Gaussian_loglikelihood(x, cov, threshold=1e-4):
-    # x = [batch_size, M, n] torch.Tensor, repeated for M times.
-    # cov = covariance matrix. [M, n, n]
-    bs, M, n = x.shape
+def complex_multivariate_Gaussian_loglikelihood(x, cov, threshold=1e-4, only_groundtruth=False):
+    # x = [batch_size, M, n] torch.Tensor in torch.cfloat, repeated for M times.
+    # cov = covariance matrix. if only_groundtruth, [bs, n, n]. Otherwise, [M, n, n].
+    bs, _, n = x.shape
+    num_codewords = cov.shape[0]
 
-    cov_real = torch.empty(M, 2 * n, 2 * n, dtype=torch.float, device=x.device)
-    cov_real[:, :n, :n] = cov.real
-    cov_real[:, n:, n:] = cov.real
-    cov_real[:, :n, n:] = -cov.imag
-    cov_real[:, n:, :n] = cov.imag
-    cov_real = cov_real / 2
+    x = x.view(-1, n, 1)
 
-    x_real = torch.empty(bs, M, 2 * n, device=x.device, dtype=torch.float)
-    x_real[:, :, :n] = x.real
-    x_real[:, :, n:] = x.imag
-
-    eigen_values, eigen_vector = torch.linalg.eig(cov_real)
+    eigen_values, eigen_vector = torch.linalg.eig(cov)
     eigen_values = eigen_values.real
     idx_bool = eigen_values > threshold
 
     log_eigen_v = torch.log(eigen_values) * idx_bool
-    det = torch.sum(log_eigen_v, dim=1)
+    log_det = torch.sum(log_eigen_v, dim=1)
 
-    cov_inv = torch.inverse(cov_real)
-    cov_inv = cov_inv[None, :, :, :].repeat(bs, 1, 1, 1).view(-1, 2 * n, 2 * n)  # [bs * M, 2*n, 2*n]
-    det = det[None, :].repeat(bs, 1).view(-1, 1)
-    x_real = x_real.view(-1, 2 * n, 1)
+    cov_inv = torch.inverse(cov)
 
-    denom = det * 0.5 + math.log((math.pi ** n) * (2 ** n))
-    quad = torch.bmm(torch.bmm(torch.transpose(x_real, 1, 2), cov_inv), x_real) / 2  # [bs * M, 1, 1]
+    if only_groundtruth is False:
+        cov_inv = cov_inv[None, :, :, :].repeat(bs, 1, 1, 1).view(-1, n, n)  # [bs * M, 2*n, 2*n]
+        log_det = log_det[None, :].repeat(bs, 1).view(-1, 1)
+
+    denom = n * math.log(math.pi) + log_det # * (2 ** n)
+    denom = denom.view(bs, -1)
+    quad = torch.bmm(torch.bmm(torch.transpose(x.conj(), 1, 2), cov_inv), x) / 2  # [bs * M, 1, 1]
     num = -quad.view(-1, 1)  # torch.exp(-quad).view(-1,1)
-    return (-denom + num).reshape(-1, M)  # torch.div(num, denom).reshape(-1, M) # [batch_size, M]
+    log_likelihood = (-denom + num).reshape(bs, -1)
+    return log_likelihood.real
 
 
-def ML_det_Rayleigh_ncd(r_seq, table, cov_h, std_z):
+
+def ML_det_Rayleigh_ncd(r_seq, table, cov_h, std_z, only_groundtruth=False):
     # r_seq: [batch_size, n]
-    # table: list of possible codewords. shape: [M, n]
-    # indices: [batch_size, 1], telling the indices of detected symbols in the table.
+    # table: list of possible codewords. shape: if only_groundtruth [bs, n]. Otherwise, [M, n].
+    # cov_h: [n, n] torch.cfloat matrix. The covariance matrix of the channel vector.
+    # std_z: float The additive noise standard deviation.
+    # only_groundtruth: bool. If true, only the likelihood of the groundtruth is calculated without detection.
+
     bs, _ = r_seq.shape
-    M, n = table.shape
     device = r_seq.device
     cov_h = cov_h.to(device)
     table = table.to(device)
+
+    num_codewords, n = table.shape
+    table = table[:, :, None] # [bs, n, 1] / [M, n, 1]
+
+    # identity matrix
     I = torch.eye(n, dtype=torch.cfloat).to(device)  # [None, None, :,:].repeat(bs, M, 1, 1)
     I.imag = 0.
-    table = table[:, :, None]
-    xx = torch.bmm(table, torch.transpose(torch.conj(table), 1, 2))  # [M,n,1] * [M,1,n] => [M, n, n]
+
+    # xx^H of the given input vectors
+    xx = torch.bmm(table, torch.transpose(torch.conj(table), 1, 2))  # [num_codewords,n,1] * [num_codewords,1,n] => [num_codewords, n, n]
     # ang_xx = xx / (xx.abs()+10 ** (-10))
-    cov = xx * cov_h[None, :, :].repeat(M, 1, 1) + 2* std_z ** 2 * I[None, :, :].repeat(M, 1, 1)  # [M, n, n]
+
+    cov = xx * cov_h[None, :, :].repeat(num_codewords, 1, 1) + 2 * std_z ** 2 * I[None, :, :].repeat(num_codewords, 1, 1)
 
     # prob = complex_multivariate_Gaussian2(r_seq[:,None,:].repeat(1,M,1), cov)
-    prob = complex_multivariate_Gaussian_loglikelihood(r_seq[:, None, :].repeat(1, M, 1), cov)
-    indices = torch.argmax(prob, dim=1)
-    return prob, indices.view(-1, 1)
+    if only_groundtruth:
+        prob = complex_multivariate_Gaussian_loglikelihood(r_seq[:, None, :], cov, only_groundtruth=only_groundtruth)
+    else:
+        prob = complex_multivariate_Gaussian_loglikelihood(r_seq[:, None, :].repeat(1, num_codewords, 1), cov, only_groundtruth=only_groundtruth)
+    if only_groundtruth:
+        return prob, None
+    else:
+        indices = torch.argmax(prob, dim=1)
+        return prob, indices.view(-1, 1)
 
 
 def MMSE_H_estimator_iid(x, y, sigma_n):
