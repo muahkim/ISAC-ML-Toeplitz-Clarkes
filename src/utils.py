@@ -267,7 +267,98 @@ def complex_multivariate_Gaussian2(x, cov):
     return torch.div(num, denom).reshape(-1, M)  # [batch_size, M]
 
 
-def complex_multivariate_Gaussian_loglikelihood(x, cov, threshold=1e-4, only_groundtruth=False):
+def complex_multivariate_Gaussian_loglikelihood(x, cov, threshold=1e-3, only_groundtruth=False):
+    # x = [batch_size, M, n] torch.Tensor in torch.cfloat, repeated for M times. If only_groundtruth, M=1.
+    # cov = covariance matrix. if only_groundtruth, [bs, n, n]. Otherwise, [M, n, n].
+    bs, _, n = x.shape
+    num_codewords = cov.shape[0]
+
+    x = x.view(-1, n, 1)
+
+    # Eigen decomposition
+    eigen_values, eigen_vector = torch.linalg.eig(cov)
+    eigen_values = eigen_values.real  # Only real parts are needed
+    eigen_values = torch.clamp(eigen_values, min=threshold)  # Avoid numerical issues
+
+    log_det = torch.sum(torch.log(eigen_values), dim=1)
+
+    # Use pseudo-inverse to avoid singularity issues
+    cov_inv = torch.linalg.pinv(cov)
+    # Forcing the inverse matrix Hermitian
+    cov_inv = (cov_inv + cov_inv.mH) / 2
+
+    if not only_groundtruth:
+        cov_inv = cov_inv[None, :, :, :].repeat(bs, 1, 1, 1).view(-1, n, n)  # [bs * M, n, n]
+        log_det = log_det[None, :].repeat(bs, 1).view(-1, 1)
+
+    # Compute likelihood terms
+    denom = n * math.log(math.pi) + log_det
+    denom = denom.view(bs, -1)
+
+    # Correct Hermitian transposition
+    quad = x.mH @ cov_inv @ x  # [bs * M, 1, 1]
+    exponent = -quad.view(bs, -1)
+
+    log_likelihood = (-denom + exponent).reshape(bs, -1)
+
+    return log_likelihood.real  # Return only real part
+
+def complex_gaussian_logpdf_via_real_equivalent(x, cov, threshold=1e-6, only_groundtruth=False):
+    """
+    Computes the log-likelihood of a complex Gaussian random vector using its
+    real-valued equivalent representation.
+
+    Args:
+        x (torch.Tensor): Complex input vector of shape [batch_size, n].
+        cov (torch.Tensor): Complex covariance matrix of shape [n, n].
+        threshold (float): Regularization to ensure numerical stability.
+
+    Returns:
+        log_likelihood (torch.Tensor): Log-likelihood values of shape [batch_size].
+    """
+    # x = [batch_size, M, n] torch.Tensor in torch.cfloat, repeated for M times. If only_groundtruth, M=1.
+    # cov = covariance matrix. if only_groundtruth, [bs, n, n]. Otherwise, [M, n, n].
+    bs, _, n = x.shape
+    num_codewords = cov.shape[0]
+
+    # Construct real-valued equivalent vector
+    x_real = torch.view_as_real(x)  # Shape: [batch_size, n, 2]
+    x_real = x_real.reshape(bs, -1, 2 * n)  # Shape: [batch_size, 2n]
+
+    # Construct real-valued equivalent covariance matrix
+    cov_real = torch.view_as_real(cov)  # Shape: [n, n, 2]
+    cov_r = cov_real[:, :, :, 0]  # Real part
+    cov_i = cov_real[:, :, :, 1]  # Imaginary part
+
+    # Construct full real-valued covariance matrix
+    cov_tilde = torch.cat([
+        torch.cat([cov_r, -cov_i], dim=2),
+        torch.cat([cov_i, cov_r], dim=2)
+    ], dim=1)  # Shape: [2n, 2n]
+
+    # Regularization to ensure positive definiteness
+    cov_tilde += threshold * torch.eye(2 * n, dtype=torch.float32)[None, :, :].repeat(num_codewords, 1, 1)
+
+    # Compute determinant and inverse of the covariance matrix
+    sign, logdet = torch.linalg.slogdet(cov_tilde)  # Log determinant for stability
+    cov_tilde_inv = torch.linalg.pinv(cov_tilde)  # More stable than inverse
+
+    x_real = x_real.reshape(-1, 2*n)
+
+    if not only_groundtruth:
+        logdet = logdet[None, :].repeat(bs, 1).view(-1, 1)
+        cov_tilde_inv = cov_tilde_inv[None, :, :, :].repeat(bs, 1, 1, 1).view(-1, 2 * n, 2 * n)
+
+    # Compute quadratic form: (x^T * Sigma^-1 * x)
+    quad_form = torch.einsum('bi,bij,bj->b', x_real, cov_tilde_inv, x_real)
+
+    # Compute log-likelihood
+    log_likelihood = -0.5 * (2 * n * torch.log(torch.tensor(2 * torch.pi)) + logdet + quad_form)
+
+    return log_likelihood.reshape(bs, -1)
+
+
+def complex_multivariate_Gaussian_loglikelihood_old(x, cov, threshold=1e-4, only_groundtruth=False):
     # x = [batch_size, M, n] torch.Tensor in torch.cfloat, repeated for M times.
     # cov = covariance matrix. if only_groundtruth, [bs, n, n]. Otherwise, [M, n, n].
     bs, _, n = x.shape
@@ -288,11 +379,12 @@ def complex_multivariate_Gaussian_loglikelihood(x, cov, threshold=1e-4, only_gro
         cov_inv = cov_inv[None, :, :, :].repeat(bs, 1, 1, 1).view(-1, n, n)  # [bs * M, 2*n, 2*n]
         log_det = log_det[None, :].repeat(bs, 1).view(-1, 1)
 
-    denom = n * math.log(math.pi) + log_det # * (2 ** n)
+    denom = n * math.log(math.pi) + log_det
     denom = denom.view(bs, -1)
-    quad = torch.bmm(torch.bmm(torch.transpose(x.conj(), 1, 2), cov_inv), x) / 2  # [bs * M, 1, 1]
-    num = -quad.view(-1, 1)  # torch.exp(-quad).view(-1,1)
-    log_likelihood = (-denom + num).reshape(bs, -1)
+    quad = torch.bmm(torch.bmm(torch.transpose(x.conj(), 1, 2), cov_inv), x)   # [bs * M, 1, 1]
+    exponent = -quad.view(bs, -1)  # torch.exp(-quad).view(-1,1)
+    log_likelihood = (-denom + exponent).reshape(bs, -1)
+
     return log_likelihood.real
 
 
@@ -316,22 +408,49 @@ def ML_det_Rayleigh_ncd(r_seq, table, cov_h, std_z, only_groundtruth=False):
     I = torch.eye(n, dtype=torch.cfloat).to(device)  # [None, None, :,:].repeat(bs, M, 1, 1)
     I.imag = 0.
 
-    # xx^H of the given input vectors
-    xx = torch.bmm(table, torch.transpose(torch.conj(table), 1, 2))  # [num_codewords,n,1] * [num_codewords,1,n] => [num_codewords, n, n]
-    # ang_xx = xx / (xx.abs()+10 ** (-10))
+    X_cov = torch.diag_embed(table.view(-1, n)) @ cov_h[None, :, :].repeat(num_codewords, 1, 1)
+    X_cov_XH = X_cov @ torch.diag_embed(table.view(-1,n)).mH
+    cov_x_tilde = X_cov_XH + 2 * std_z ** 2 * I[None, :, :].repeat(num_codewords, 1, 1)
 
-    cov = xx * cov_h[None, :, :].repeat(num_codewords, 1, 1) + 2 * std_z ** 2 * I[None, :, :].repeat(num_codewords, 1, 1)
+    #print(is_valid_covariance_matrix(cov_x_tilde))
 
-    # prob = complex_multivariate_Gaussian2(r_seq[:,None,:].repeat(1,M,1), cov)
     if only_groundtruth:
-        prob = complex_multivariate_Gaussian_loglikelihood(r_seq[:, None, :], cov, only_groundtruth=only_groundtruth)
+        log_prob = complex_gaussian_logpdf_via_real_equivalent(r_seq[:, None, :], cov_x_tilde, only_groundtruth=only_groundtruth)
     else:
-        prob = complex_multivariate_Gaussian_loglikelihood(r_seq[:, None, :].repeat(1, num_codewords, 1), cov, only_groundtruth=only_groundtruth)
+        #log_prob = complex_multivariate_Gaussian_loglikelihood(r_seq[:, None, :].repeat(1, num_codewords, 1), cov_x_tilde, only_groundtruth=only_groundtruth)
+
+        log_prob = complex_gaussian_logpdf_via_real_equivalent(r_seq[:, None, :].repeat(1, num_codewords, 1), cov_x_tilde, only_groundtruth=only_groundtruth)
+
     if only_groundtruth:
-        return prob, None
+        return log_prob, None
     else:
-        indices = torch.argmax(prob, dim=1)
-        return prob, indices.view(-1, 1)
+        indices = torch.argmax(log_prob, dim=1)
+        return log_prob, indices.view(-1, 1)
+
+
+
+def is_valid_covariance_matrix(cov, threshold=1e-6):
+    """
+    Checks if a given covariance matrix is Hermitian and positive definite.
+
+    Args:
+        cov (torch.Tensor): A square complex matrix of shape (n, n).
+        threshold (float): Minimum allowable eigenvalue to be considered positive definite.
+
+    Returns:
+        bool: True if the matrix is valid, False otherwise.
+    """
+    # Check Hermitian property: cov should be equal to its conjugate transpose
+    is_hermitian = torch.allclose(cov, cov.mH, atol=1e-6)
+
+    # Compute eigenvalues
+    eigenvalues = torch.linalg.eigvals(cov).real  # Only real parts are relevant
+
+    # Check positive definiteness: all eigenvalues must be > threshold
+    is_positive_definite = torch.all(eigenvalues > threshold)
+
+    return is_hermitian and is_positive_definite
+
 
 
 def MMSE_H_estimator_iid(x, y, sigma_n):

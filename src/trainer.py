@@ -213,7 +213,7 @@ class Trainer:
                     loglikelihood, m_hat = self.MLDetector(y_c, table, only_groundtruth = config.only_groundtruth)
 
                     # Backward pass for decoder
-                    loss_c = loss_CE(loglikelihood, labels.long().squeeze(1))
+                    loss_c = loss_CE(torch.exp(loglikelihood), labels.long().squeeze(1))
                 loss_c = loss_c.mean()
 
 
