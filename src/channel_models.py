@@ -13,47 +13,109 @@ from numpy.random import randn, random, standard_normal
 from scipy.linalg import sqrtm, cholesky
 from scipy.integrate import quad_vec
 import scipy.integrate as spi
+import utils_standard_codec
 
 
-def ch_corr_Rayleigh_by_cov(x, cov, noise_std, device, decomposition_method='cholesky'):
+def ch_corr_Rayleigh_by_cov(x, cov, noise_std, device, decomposition_method='eigenvector'):
     x = x.to(device)
     bs = x.size(0)
     n = x.size(1)
     assert cov.shape == (n, n)
 
-    # generate normally distributed matrices
-    h = torch.normal(mean=0., std=1., size=(bs, n), device=device, dtype=torch.cfloat)
-    h = h[:, :, None]
-    # Compute a matrix A such that A*A^H = Cov.
 
-    if decomposition_method == 'cholesky':
-        # Compute the Cholesky decomposition.
-        A = torch.linalg.cholesky(cov, upper=False)  # torch.cholesky(Cov, upper=False)
-        A = A[None, :, :].repeat(bs, 1, 1).to(device)
-    elif decomposition_method == 'eigenvector':
-        # Eigen-decomposition
-        eigvals, eigvecs = torch.linalg.eigh(cov)
+    if torch.equal(cov, utils_standard_codec.Rayleigh_covariance_generator(n, 1.0, dtype_cov=torch.cfloat) ):
+        y_c, h = ch_Rayleigh_uncorrelated(x, noise_std, device)
+    elif torch.equal(cov, utils_standard_codec.Rayleigh_covariance_generator(n, 0.0, dtype_cov=torch.cfloat)) :
+        y_c, h = ch_Rayleigh_fully_correlated(x, noise_std, device)
+    else:
+        # generate normally distributed matrices
+        h = torch.normal(mean=0., std=1., size=(bs, n), device=device, dtype=torch.cfloat)
+        h = h[:, :, None]
+        # Compute a matrix A such that A*A^H = Cov.
 
-        # Ensure eigenvalues are non-negative (clip small negatives due to numerical errors)
-        eigvals = torch.clamp(eigvals, min=1e-6)
+        if decomposition_method == 'cholesky':
+            # Compute the Cholesky decomposition.
+            A = torch.linalg.cholesky(cov, upper=False)  # torch.cholesky(Cov, upper=False)
+            A = A[None, :, :].repeat(bs, 1, 1).to(device)
+            # Correlated channel matrices h = Ah,  A[n,n] h[n, 1]
 
-        # Generate correlated Gaussian variables
-        A = eigvecs @ torch.diag(eigvals.sqrt()).to(torch.cfloat)
-        A = A.repeat(bs, 1, 1).to(device)
 
-    # Correlated channel matrices h = Ah,  A[n,n] h[n, 1]
-    h = torch.bmm(A, h)
-    h = h.view(bs, n)
+        elif decomposition_method == 'eigenvector':
+            # Eigen-decomposition
+            eigvals, eigvecs = torch.linalg.eigh(cov)
 
-    y_c = h * x
-    #    x_r = torch.view_as_real(h)
-    #    print(torch.std(x_r[:,:,0]) ** 2)
-    #    print(torch.std(x_r[:,:,1]) ** 2)
+            # Ensure eigenvalues are non-negative (clip small negatives due to numerical errors)
+            eigvals = torch.clamp(eigvals, min=1e-6)
 
-    y_c = y_c + torch.normal(mean=0, std=2 **0.5 * noise_std, size=x.size(), dtype=torch.cfloat).to(device)
+            # Generate correlated Gaussian variables
+            A = eigvecs @ torch.diag(eigvals.sqrt()).to(torch.cfloat)
+            A = A.repeat(bs, 1, 1).to(device)
+
+        h = torch.bmm(A, h)
+        h = h.view(bs, n)
+
+        y_c = h * x
+        #    x_r = torch.view_as_real(h)
+        #    print(torch.std(x_r[:,:,0]) ** 2)
+        #    print(torch.std(x_r[:,:,1]) ** 2)
+
+        if isinstance(noise_std, torch.Tensor):
+            noise_r = torch.normal(mean=0, std= noise_std).to(device)
+            noise_i = torch.normal(mean=0, std= noise_std).to(device)
+        else:
+            noise_r = torch.normal(mean=0, std= noise_std, size=x.size()).to(device)
+            noise_i = torch.normal(mean=0, std= noise_std, size=x.size()).to(device)
+        noise = noise_r + 1j * noise_i
+
+        y_c = y_c + noise
 
     return y_c, h
 
+def ch_Rayleigh_fully_correlated(x, noise_std, device):
+    x = x.to(device)
+    bs = x.size(0)
+    n = x.size(1)
+
+    # generate normally distributed matrices
+    h = torch.normal(mean=0., std=1., size=(bs, 1), device=device, dtype=torch.cfloat)
+    h = h.repeat(1, n)
+
+    if isinstance(noise_std, torch.Tensor):
+        noise_r = torch.normal(mean=0, std= noise_std).to(device)
+        noise_i = torch.normal(mean=0, std= noise_std).to(device)
+    else:
+        noise_r = torch.normal(mean=0, std= noise_std, size=x.size()).to(device)
+        noise_i = torch.normal(mean=0, std= noise_std, size=x.size()).to(device)
+    noise = noise_r + 1j * noise_i
+    y_c = h * x + noise
+
+    return y_c, h
+
+def ch_Rayleigh_uncorrelated(x, noise_std, device):
+    x = x.to(device)
+    bs = x.size(0)
+    n = x.size(1)
+
+    # generate normally distributed matrices
+    h = torch.normal(mean=0., std=1., size=(bs, n), device=device, dtype=torch.cfloat)
+
+    if isinstance(noise_std, torch.Tensor):
+        noise_r = torch.normal(mean=0, std= noise_std).to(device)
+        noise_i = torch.normal(mean=0, std= noise_std).to(device)
+    else:
+        noise_r = torch.normal(mean=0, std= noise_std, size=x.size()).to(device)
+        noise_i = torch.normal(mean=0, std= noise_std, size=x.size()).to(device)
+    noise = noise_r + 1j * noise_i
+    y_c = h * x + noise
+
+    return y_c, h
+
+def ch_AWGN(x, noise_std, device):
+    x = x.to(device)
+
+    y_c = x + torch.normal(mean=0, std= noise_std, size=x.size(), dtype=torch.cfloat).to(device)
+
+    return y_c, None
 
 def ch_Rayleigh(ch_input, h_std, noise_std, device):
     # y = hx + z
@@ -178,7 +240,7 @@ def construct_Toeplitz_matrices(N, P, h_batch, tau_batch, T):
     return toeplitz_matrices
 
 
-def Toeplitz_channel(input, P, T, h_mean=0+0j, h_var=1, N0=1, tau_max=10):
+def Toeplitz_channel(input, P, T, h_mean=0+0j, h_var=1, N0=1, tau_max=[2], without_output=False):
     """
     Gives the channel output of the given input for defined Toeplitz channel model.
 
@@ -188,7 +250,7 @@ def Toeplitz_channel(input, P, T, h_mean=0+0j, h_var=1, N0=1, tau_max=10):
     T       : float - Symbol period
     h_mean  : complex float - mean value of the channel coefficient
     h_var   : float - variance of the channel coefficient
-    tau_max : float - max value of the path delay
+    tau_max : a list of float - max value of the path delay
 
 
     Returns:
@@ -206,7 +268,16 @@ def Toeplitz_channel(input, P, T, h_mean=0+0j, h_var=1, N0=1, tau_max=10):
     h = h_real + 1j * h_imag  # Combine real and imaginary parts
 
     # Uniformly distributed random values in [0, tau_max] (equivalent to `torch.empty.uniform_`)
-    tau = np.random.uniform(0, tau_max, (bs, P))
+    # Generate samples for each path
+    samples = [np.random.uniform(0, tau_max_p, size=(bs, 1)) * T for tau_max_p in tau_max]
+
+    # Stack along axis=1
+    tau = np.hstack(samples)
+
+    #tau = np.random.uniform(0, tau_max, (bs, P))
+
+    if without_output:
+        return None, h, tau
 
     H = torch.from_numpy(construct_Toeplitz_matrix(N, P, h, tau, T)).to(input.device)
     w = torch.randn_like(input, dtype=torch.cfloat, device=input.device) * ( (N0/2) ** 0.5 )

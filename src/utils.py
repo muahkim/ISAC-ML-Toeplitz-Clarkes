@@ -1,37 +1,30 @@
 # Loss Function for Diffusion Model
 # Original Source: https://github.com/acids-ircam/diffusion_models
 
-import torch
 import numpy as np
 import sys
-import math
 
 assert sys.version_info >= (3, 5)
 import matplotlib.pyplot as plt
-import torch.nn.functional as F
 from torch.utils.data.dataloader import DataLoader
 
 np.random.seed(42)
 from tqdm import tqdm
 from utils_standard_codec import *
 
-sys.path.append('src/')
-from channel_models import *
-
-
 def approx_standard_normal_cdf(x):
     return 0.5 * (1.0 + torch.tanh(torch.tensor(np.sqrt(2.0 / np.pi)) * (x + 0.044715 * torch.pow(x, 3))))
 
 
 def EbNo_to_noise(ebnodb, rate):
-    '''Transform EbNo[dB]/snr to noise power'''
+    '''Transform EbNo[dB] to noise power'''
     ebno = 10 ** (ebnodb / 10)
     noise_std = 1 / np.sqrt(2 * rate * ebno)
     return noise_std
 
 
 def SNR_to_noise(snrdb):
-    '''Transform EbNo[dB]/snr to noise power'''
+    '''Transform snr[dB] to noise power'''
     snr = 10 ** (snrdb / 10)
     noise_std = 1 / np.sqrt(2 * snr)
     return noise_std
@@ -337,7 +330,7 @@ def complex_gaussian_logpdf_via_real_equivalent(x, cov, threshold=1e-6, only_gro
     ], dim=1)  # Shape: [2n, 2n]
 
     # Regularization to ensure positive definiteness
-    cov_tilde += threshold * torch.eye(2 * n, dtype=torch.float32)[None, :, :].repeat(num_codewords, 1, 1)
+    cov_tilde += threshold * torch.eye(2 * n, dtype=torch.float32, device=cov_tilde.device)[None, :, :].repeat(num_codewords, 1, 1)
 
     # Compute determinant and inverse of the covariance matrix
     sign, logdet = torch.linalg.slogdet(cov_tilde)  # Log determinant for stability
@@ -350,7 +343,10 @@ def complex_gaussian_logpdf_via_real_equivalent(x, cov, threshold=1e-6, only_gro
         cov_tilde_inv = cov_tilde_inv[None, :, :, :].repeat(bs, 1, 1, 1).view(-1, 2 * n, 2 * n)
 
     # Compute quadratic form: (x^T * Sigma^-1 * x)
-    quad_form = torch.einsum('bi,bij,bj->b', x_real, cov_tilde_inv, x_real)
+    quad_form = torch.einsum('bi, bij, bj -> b', x_real, cov_tilde_inv, x_real)
+
+    quad_form = quad_form.view(-1)
+    logdet = logdet.view(-1)
 
     # Compute log-likelihood
     log_likelihood = -0.5 * (2 * n * torch.log(torch.tensor(2 * torch.pi)) + logdet + quad_form)
@@ -420,6 +416,7 @@ def ML_det_Rayleigh_ncd(r_seq, table, cov_h, std_z, only_groundtruth=False):
         #log_prob = complex_multivariate_Gaussian_loglikelihood(r_seq[:, None, :].repeat(1, num_codewords, 1), cov_x_tilde, only_groundtruth=only_groundtruth)
 
         log_prob = complex_gaussian_logpdf_via_real_equivalent(r_seq[:, None, :].repeat(1, num_codewords, 1), cov_x_tilde, only_groundtruth=only_groundtruth)
+
 
     if only_groundtruth:
         return log_prob, None
@@ -696,6 +693,15 @@ def dec2bin(x, bits):
     mask = 2 ** torch.arange(bits - 1, -1, -1).to(x.device, x.dtype)
     return x.unsqueeze(-1).bitwise_and(mask).ne(0).float()
 
+def dec2bin_np(x, bits):
+    x = np.asarray(x)  # Ensure input is an array
+    mask = 2 ** np.arange(bits - 1, -1, -1)
+    return ((x[..., None] & mask) > 0).astype(float)
+
+def dec2bin_digits(arr, bits=None):
+    """Convert a NumPy array of integers to binary (as digit arrays)."""
+    bin_arr = np.array([list(format(x, f'0{bits}b')) for x in arr], dtype=int)
+    return bin_arr
 
 def bin2dec(b, bits):
     mask = 2 ** torch.arange(bits - 1, -1, -1).to(b.device, b.dtype)
@@ -786,7 +792,7 @@ def FIM_diag_Toeplitz_delay(N0, h_s_a, x, tau_s_a, T):
     N0 (float): Noise power spectral density
     h_s_a (torch.Tensor): Complex channel coefficient (batch_size,)
     x (torch.Tensor): Input signal sequence (batch_size, N)
-    tau_s_a (torch.Tensor): Time delay parameter (batch_size,)
+    tau_s_a (torch.Tensor): Time delay parameter (batch_size, )
     T (float): Symbol duration
 
     Returns:
@@ -796,8 +802,8 @@ def FIM_diag_Toeplitz_delay(N0, h_s_a, x, tau_s_a, T):
     tau_s_a = torch.from_numpy(tau_s_a).to(x.device)
 
     batch_size, N = x.shape  # Get batch size and sequence length
-    coeff = (2 / N0) * (torch.abs(h_s_a) ** 2)  # Compute coefficient (batch_size,)
-
+    coeff = (2 / N0) * (torch.abs(h_s_a).view(-1,1) ** 2)  # Compute coefficient (batch_size,)
+    coeff = coeff.squeeze()
     # Create indices for m and n (shape: (N, N))
     m_idx = torch.arange(1, N + 1, device=x.device).view(N, 1)  # Column vector (N, 1)
     n_idx = torch.arange(1, N + 1, device=x.device).view(1, N)  # Row vector (1, N)
@@ -807,7 +813,7 @@ def FIM_diag_Toeplitz_delay(N0, h_s_a, x, tau_s_a, T):
     sinc_arg = m_idx - n_idx - tau_s_a_expanded / T  # (batch_size, N, N)
 
     # Compute sinc derivative
-    sinc_deriv = sinc_derivative(sinc_arg)  # (batch_size, N, N)
+    sinc_deriv = sinc_derivative(sinc_arg) * (-1.0) # (batch_size, N, N)
 
     # Compute inner summation (sum over n dimension)
     inner_sum = torch.sum(x.unsqueeze(1) * sinc_deriv, dim=-1)  # (batch_size, N)
@@ -817,10 +823,20 @@ def FIM_diag_Toeplitz_delay(N0, h_s_a, x, tau_s_a, T):
 
     return coeff * summation  # (batch_size,)
 
-def CRLB(N0, h_s_a, x, tau_s_a, T, eps=1e-6):
+
+def CRLB_mean(N0, h_s_a, x, tau_s_a, T, eps=1e-6):
     J_aa = 1 / ( FIM_diag_Toeplitz_delay(N0, h_s_a, x, tau_s_a, T) + eps )
-    CRLB = torch.sum(J_aa)
+    CRLB = torch.mean(J_aa) # Miller Chang bound # normalization added.
     return CRLB
+
+def MCLB_mean(N0, dummy, x, tau_s_a, T, eps=1e-6):
+    num_samples = x.size(0)
+    h_s_a = np.ones(num_samples)
+    J_aa = 1 / ( FIM_diag_Toeplitz_delay(N0, h_s_a, x, tau_s_a, T) + eps )
+    MCLB = torch.mean(J_aa) # Miller Chang bound # normalization added.
+    return MCLB
+
+
 
 def snr_db2sigma(train_snr):
     return 10**(-train_snr*1.0/20)
@@ -830,3 +846,14 @@ def snr_sigma2db(train_sigma):
         return -20.0 * math.log(train_sigma, 10)
     except:
         return -20.0 * torch.log10(train_sigma)
+
+def Likelihood_corr_fading_ncd(y, table, noise_std):
+    dist = torch.squeeze(torch.cdist(y, table, p=2) ** 2 / (noise_std ** 2))  # (bs, 1, M)
+    prob = torch.exp(-dist)
+    prob = prob / torch.sum(prob, dim=1)[:, None]  # normalization of the probability
+    return prob
+
+def save_arguments_to_file(args, filename="arguments.txt"):
+    with open(filename, "w") as f:
+        for arg, value in vars(args).items():
+            f.write(f"{arg}: {value}\n")

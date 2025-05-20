@@ -14,7 +14,11 @@ import utils
 class Encoder(nn.Module):
     def __init__(self, k, M, n, **extra_kwargs):
         super(Encoder, self).__init__()
-        
+
+        self.k = k
+        self.M = M
+        self.n = n
+
         use_cuda =  torch.cuda.is_available()
         self.this_device = torch.device("cuda" if use_cuda else "cpu")
 
@@ -39,19 +43,23 @@ class Encoder(nn.Module):
         x = self.power_constraint(_x)
         return x
 
-class Decoder(nn.Module):
+class Decoder_1h(nn.Module):
     def __init__(self,k, M ,n, **extra_kwargs):
-        super(Decoder, self).__init__()
+        super(Decoder_1h, self).__init__()
         self._f = nn.Sequential(
-               nn.Linear(n, M),
-               nn.ELU(),
-               nn.Linear(M, M),
-               nn.ELU(),
-               nn.Linear(M, k),
-               nn.Sigmoid()
-                )
+            nn.Linear(n, M),
+            nn.ELU(),
+            nn.Linear(M, M),
+            nn.ELU(),
+            nn.Linear(M, M),
+            #nn.Linear(M, M),
+            #nn.Sigmoid()
+)
         
     def forward(self, inputs):
+        device_inputs = inputs.device
+        inputs = inputs.type(torch.FloatTensor)
+        inputs = inputs.to(device_inputs)
         x = self._f(inputs)
         return x
     
@@ -82,6 +90,8 @@ class Encoder_1h_n(nn.Module):
         return codes_norm 
         
     def forward(self, inputs):
+        # inputs: tensor [bs, 1], integer numbers from 0 to M-1.
+        inputs = F.one_hot(inputs.long(), num_classes=self.M).float()#.reshape(-1, self.M)
         inputs = inputs.to(self.this_device)
         _x = self._f(inputs)
         x = self.power_constraint(_x)
@@ -147,6 +157,8 @@ class Encoder_1h(nn.Module):
         return codes_norm
 
     def forward(self, inputs):
+        # inputs: tensor [bs, 1], integer numbers from 0 to M-1.
+        inputs = F.one_hot(inputs.long(), num_classes=self.M).float()#.reshape(-1, self.M)
         inputs = inputs.to(self.this_device)
         _x = self._f(inputs)
         x = self.power_constraint(_x)
@@ -215,6 +227,8 @@ class Encoder_1h_n2_deeper(nn.Module):
         return codes_norm
 
     def forward(self, inputs):
+        # inputs: tensor [bs, 1], integer numbers from 0 to M-1.
+        inputs = F.one_hot(inputs.long(), num_classes=self.M).float()#.reshape(-1, self.M)
         inputs = inputs.to(self.this_device)
         _x = self._f(inputs)
         x = self.power_constraint(_x)
@@ -283,6 +297,8 @@ class Encoder_1h_n2_deeper_e(nn.Module):
         return codes_norm
 
     def forward(self, inputs):
+        # inputs: tensor [bs, 1], integer numbers from 0 to M-1.
+        inputs = F.one_hot(inputs.long(), num_classes=self.M).float()#.reshape(-1, self.M)
         inputs = inputs.to(self.this_device)
         _x = self._f(inputs)
         inputs_dec = torch.argmax(inputs,dim=1).to(self.this_device)
@@ -357,6 +373,8 @@ class Encoder_1h_n2_deeper_ee(nn.Module):
         return codes_norm
 
     def forward(self, inputs):
+        # inputs: tensor [bs, 1], integer numbers from 0 to M-1.
+        inputs = F.one_hot(inputs.long(), num_classes=self.M).float()#.reshape(-1, self.M)
         inputs = inputs.to(self.this_device)
         inputs_dec = torch.argmax(inputs, dim=1).to(self.this_device)
         
@@ -424,7 +442,7 @@ class Encoder_embedding(nn.Module):
 
     def forward(self, inputs):
 #        inputs = inputs.to(self.this_device)
-        inputs = torch.argmax(inputs, dim=1).to(self.this_device)
+        inputs = torch.argmax(inputs, dim=1).to(self.this_device).squeeze()
         _x = self._f(inputs)
         x = self.power_constraint(_x)
         return x
@@ -457,7 +475,8 @@ class Encoder_TConv1D(torch.nn.Module):
         
     def forward(self, inputs):
 
-        inputs = torch.argmax(inputs, dim=1).to(self.device)
+        #inputs = torch.argmax(inputs, dim=1).to(self.device)
+        inputs = inputs.to(self.device)
         x = self.TConv(inputs)
         
         x = torch.flatten(x, 1)

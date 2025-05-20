@@ -113,7 +113,13 @@ class ENCBase(torch.nn.Module):
                 self.std_scalar  = (self.std_scalar*(self.num_test_block-1) + this_std)/self.num_test_block
                 x_input_norm = (x_input - self.mean_scalar)/self.std_scalar
             else:
-                x_input_norm = (x_input-this_mean)*1.0 / this_std
+                if self.args.fixed_block_power:
+                    block_len = x_input.shape[1] * x_input.shape[2] // 2
+                    block_std = torch.sum(x_input**2, dim=[1,2]) ** 0.5
+                    x_input_norm = x_input * 1.0 / block_std[:,None,None] * (block_len ** 0.5)
+                else:
+                    x_input_norm = (x_input - this_mean) * 1.0 / this_std / (2 ** 0.5)
+                    block_power = torch.sum(x_input_norm ** 2, dim=[1, 2])
 
             if self.args.train_channel_mode == 'block_norm_ste':
                 stequantize = STEQuantize.apply
@@ -330,9 +336,9 @@ class ENC_interCNN(ENCBase):
                                                       out_channels= args.enc_num_unit, kernel_size = args.enc_kernel_size)
 
 
-        self.enc_linear_1    = torch.nn.Linear(args.enc_num_unit, 1)
-        self.enc_linear_2    = torch.nn.Linear(args.enc_num_unit, 1)
-        self.enc_linear_3    = torch.nn.Linear(args.enc_num_unit, 1)
+        self.enc_linear_1    = torch.nn.Linear(args.enc_num_unit, args.enc_num_output_dim)
+        self.enc_linear_2    = torch.nn.Linear(args.enc_num_unit, args.enc_num_output_dim)
+        self.enc_linear_3    = torch.nn.Linear(args.enc_num_unit, args.enc_num_output_dim)
 
         self.interleaver      = Interleaver(args, p_array)
 
@@ -657,17 +663,17 @@ class CNN_encoder_rate3(ENCBase):
                                                   out_channels= args.enc_num_unit, kernel_size = args.dec_kernel_size)
 
 
-        self.enc_linear_1    = torch.nn.Linear(args.enc_num_unit, 1)
+        self.enc_linear_1    = torch.nn.Linear(args.enc_num_unit, args.enc_num_output_dim)
 
         self.enc_cnn_2       = SameShapeConv1d(num_layer=args.enc_num_layer, in_channels=args.code_rate_k,
                                                   out_channels= args.enc_num_unit, kernel_size = args.dec_kernel_size)
 
-        self.enc_linear_2    = torch.nn.Linear(args.enc_num_unit, 1)
+        self.enc_linear_2    = torch.nn.Linear(args.enc_num_unit, args.enc_num_output_dim)
 
         self.enc_cnn_3       = SameShapeConv1d(num_layer=args.enc_num_layer, in_channels=args.code_rate_k,
                                                   out_channels= args.enc_num_unit, kernel_size = args.dec_kernel_size)
 
-        self.enc_linear_3    = torch.nn.Linear(args.enc_num_unit, 1)
+        self.enc_linear_3    = torch.nn.Linear(args.enc_num_unit, args.enc_num_output_dim)
 
         self.interleaver      = Interleaver(args, p_array)
 

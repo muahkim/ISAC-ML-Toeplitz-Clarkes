@@ -5,8 +5,12 @@ import sys
 import math
 
 assert sys.version_info >= (3, 5)
+
 import matplotlib as mpl
+#mpl.use('TkAgg')
 import matplotlib.pyplot as plt
+
+plt.ion()
 import matplotlib.cm as cm
 from scipy.ndimage.filters import gaussian_filter
 
@@ -20,7 +24,7 @@ mpl.rcParams.update(mpl.rcParamsDefault)
 mpl.rcParams['pdf.fonttype'] = 42
 mpl.rcParams['ps.fonttype'] = 42
 mpl.rcParams['font.family'] = "serif"
-mpl.rcParams['mathtext.fontset'] = "dejavuserif"  # cm, stix, stixsans, dejavuserif, dejavusans.
+mpl.rcParams['mathtext.fontset'] = "dejavuserif"
 mpl.rc('axes', labelsize=14)
 mpl.rc('xtick', labelsize=14)
 mpl.rc('ytick', labelsize=14)
@@ -35,18 +39,83 @@ def myplot(x1, x2, s, max_amp, bins=1000):
     extent = [xedges[0], xedges[-1], yedges[0], yedges[-1]]
     return heatmap.T, extent
 
+def batch_int_to_binary_vector(numbers, num_bits=8):
+    """Convert a batch of integers to binary vectors."""
+    num_bits = int(num_bits)
+    binary_matrix = ((numbers.clone().detach().unsqueeze(-1) >> torch.arange(num_bits - 1, -1, -1)) & 1).float()
+    return binary_matrix
 
-def Constellation_Enc(enc, M, path=None, title=None, max_amp=None, is_emb=True):
-    # Show the constellation of the learned encoder
+def line_plots_Enc(enc, M, args=None, path=None, title=None, max_amp=None, size=10, PLOT_FIGURE=False):
+    device = next(enc.parameters()).device
+
     labels = torch.arange(0, M, dtype=int)
-    if is_emb:
-        m = labels.squeeze()
-    else:
-        m = F.one_hot(labels, num_classes=M)
-        m = m.float().reshape(-1, M)
+    if args.TURBO:
+        labels = batch_int_to_binary_vector(labels, num_bits=math.log2(M))
+        if args.code_rate_k is not None:
+            labels = labels.reshape(M, int(math.log2(M)), args.code_rate_k)
+        else:
+            labels = labels.reshape(M, int(math.log2(M)), 1)
+
+    m = labels.float().to(device)
+
+    enc.eval()
     x = enc(m).detach().cpu()
+
+    x = x.view(M, -1, 2).numpy()  # each sample is a n x 2 tensor.
     n = x.shape[1]
-    x = x.view(-1, n // 2, 2).numpy()
+
+    fig = plt.figure(figsize=(10, 8))
+    plt.subplot(1, 4, 1)
+    for m in range(M):
+        plt.subplot(4, 1, 1)
+        plt.plot(np.arange(1, n + 1), x[m, :, 0])
+        plt.subplot(4, 1, 2)
+        plt.plot(np.arange(1, n + 1), x[m, :, 1])
+        plt.subplot(4, 1, 3)
+        plt.plot(np.arange(1, n + 1), np.sum(x[m] ** 2, axis=1) ** 0.5)
+        plt.subplot(4, 1, 4)
+        plt.plot(np.arange(1, n + 1), np.arctan(x[m, :, 1] / x[m, :, 0]))
+
+    plt.subplot(4, 1, 1)
+    plt.title("Real")
+    plt.xlabel("Symbol Index")
+    plt.subplot(4, 1, 2)
+    plt.title("Imag")
+    plt.xlabel("Symbol Index")
+    plt.subplot(4, 1, 3)
+    plt.title("Magnitude")
+    plt.xlabel("Symbol Index")
+    plt.subplot(4, 1, 4)
+    plt.title("Phase")
+    plt.xlabel("Symbol Index")
+    plt.legend()
+
+    plt.tight_layout()
+    if path is not None:
+        fig.savefig(path, bbox_inches='tight',dpi=300, transparent=False)
+    if PLOT_FIGURE:
+        plt.show()
+
+
+def Constellation_Enc(enc, M, args=None, path=None, title=None, max_amp=None, size=10, PLOT_FIGURE=False):
+    device = next(enc.parameters()).device
+
+    labels = torch.arange(0, M, dtype=int)
+    if args.TURBO:
+        labels = batch_int_to_binary_vector(labels, num_bits=math.log2(M))
+        if args.code_rate_k is not None:
+            labels = labels.reshape(M, int(math.log2(M)), args.code_rate_k)
+        else:
+            labels = labels.reshape(M, int(math.log2(M)), 1)
+
+    m = labels.float().to(device)
+
+    enc.eval()
+    x = enc(m).detach().cpu()
+
+    x = x.view(M, -1, 2).numpy()  # each sample is a n x 2 tensor.
+    n = x.shape[1] * 2
+    #x = x.view(-1, n // 2, 2).numpy()
     # x = np.reshape(x, [-1,n//2,2])
     if max_amp == None:
         max_re = np.sqrt(np.max(x[:, :, 0] ** 2)) * 1.2
@@ -68,6 +137,7 @@ def Constellation_Enc(enc, M, path=None, title=None, max_amp=None, is_emb=True):
     else:
         fig, axes = plt.subplots(1, n // 2, figsize=((n // 2) * 2.8, 3))
         for i in range(n // 2):
+            #axes[i].scatter(x[:, i, 0], x[:, i, 1], )  # , s=size)
             for j in range(M):
                 axes[i].scatter(x[j, i, 0], x[j, i, 1], )  # , s=size)
             # axes[i].set_xlabel('Re($x_' + str(i+1) + '$)')
@@ -75,12 +145,14 @@ def Constellation_Enc(enc, M, path=None, title=None, max_amp=None, is_emb=True):
             axes[i].set_title(r'$x_{' + str(i + 1) + '}$', fontsize=14)  # ("#"+ str(i+1))
             axes[i].set_xlim([-max_re, max_re])
             axes[i].set_ylim([-max_im, max_im])
+
     fig.tight_layout()
     if title is not None:
         fig.suptitle(title)
     if path is not None:
-        fig.savefig(path, bbox_inches='tight')
-    plt.show()
+        fig.savefig(path, bbox_inches='tight',dpi=300, transparent=False)
+    if PLOT_FIGURE:
+        plt.show()
 
     return
 
@@ -192,24 +264,37 @@ def Constellation_Enc_m(enc, M, m=0, path=None, title=None, max_amp=None):
 
     return
 
-
-def Constellation_Enc_all(enc, M, is_emb=True, is_heatmap=True, s=10, bins=200, path=None, title=None, max_amp=None,
-                          colormap=cm.coolwarm):
+def Constellation_Enc_all(enc, M, args=None, s=10,  path=None, title=None, max_amp=None,
+                          colormap=cm.coolwarm, is_heatmap=True, bins=200, PLOT_FIGURE=False):
     # Show the constellation of the learned encoder by a heat map across over n dimensions.
     mpl.rcParams.update(mpl.rcParamsDefault)
 
+    device = next(enc.parameters()).device
+
     labels = torch.arange(0, M, dtype=int)
-    if is_emb:
-        m = labels.squeeze()
-    else:
-        m = F.one_hot(labels, num_classes=M)
-        m = m.float().reshape(-1, M)
-    x = enc(m).detach()
+    if args.TURBO:
+        labels = batch_int_to_binary_vector(labels, num_bits=math.log2(M))
+        if args.code_rate_k is not None:
+            labels = labels.reshape(M, int(math.log2(M)), args.code_rate_k)
+        else:
+            labels = labels.reshape(M, int(math.log2(M)), 1)
+
+    m = labels.float().to(device)
+
+    enc.eval()
+    x = enc(m).detach().cpu()
+
     bs = x.shape[0]
-    n_r = x.shape[1]
+
+    if args.TURBO:
+        n_r = x.shape[1] * x.shape[2]
+    else:
+        n_r = x.shape[1]
 
     n = n_r // 2
+
     x = x.view(bs * n, 2).detach().cpu().numpy()
+
     if max_amp == None:
         max_amp = np.sqrt(np.max(x ** 2)) * 1.2
 
@@ -234,7 +319,8 @@ def Constellation_Enc_all(enc, M, is_emb=True, is_heatmap=True, s=10, bins=200, 
     ax.set_ylim([-max_amp, max_amp])
     if path is not None:
         fig.savefig(path, bbox_inches='tight')
-    plt.show()
+    if PLOT_FIGURE:
+        plt.show()
     return
 
 
@@ -349,66 +435,3 @@ def Constellation_InOut(enc, M, cov, noise_std, dev, num_samples=500, bs=100, pa
     plt.show()
 
     return
-
-
-def tSNE_plot(encoder, M, device):
-
-    num_samples = 100
-
-    m_sample = torch.eye(M)
-    m = m_sample.repeat_interleave(num_samples, dim=0).to(device)
-
-    x = encoder(m)
-    samples = x.detach().cpu().numpy()  # channel_model(x, noise_std, device).detach().cpu().numpy()
-    samples_emb = TSNE(n_components=2, learning_rate='auto', init='random').fit_transform(samples)
-
-    '''
-    x_ = x.view(-1, n, 2)  # each sample is a n x 2 tensor.
-    x_ = torch.view_as_complex(x_)  # each sample is a n-dimensional complex vector
-    # Communication and Radar Channel
-    y_c, _, h_c, _, _ = channels_by_cov_2mat_nb(x_, cov, noise_std,
-                                                noise_std, device)
-    y_c_r = torch.view_as_real(y_c).reshape(-1,2 * n)
-    samples_y = y_c_r.detach().cpu().numpy() #channel_model(x, noise_std, device).detach().cpu().numpy() 
-    samples_emb = TSNE(n_components=2, learning_rate='auto', init='random').fit_transform(samples_y)
-    '''
-
-
-
-    unfilled_markers = [m for m, func in Line2D.markers.items()
-                        if func != 'nothing' and m not in Line2D.filled_markers]
-
-    colors = 100 // M * np.arange(M) / 100 + 0.07  # np.arange(1, 100, 100//M, dtype=int)[:M]
-    cmap = plt.cm.get_cmap('gist_ncar')
-    colors_rgba = cmap(colors) * 0.8
-
-    fig, axs = plt.subplots(1, 3, figsize=(10, 3))
-
-    for i in range(M):
-        axs[0].scatter(samples[i * num_samples:(i + 1) * num_samples, 0],
-                       samples[i * num_samples:(i + 1) * num_samples, 1]
-                       , color=colors_rgba[i], s=10, marker=unfilled_markers[i], label="m=" + str(i + 1))
-
-    # for i in range(M):
-    #    axs[1].scatter(samples_y[i*num_samples:(i+1)*num_samples,0], samples_y[i*num_samples:(i+1)*num_samples,1]
-    #                , color =colors_rgba[i], s=3, marker=unfilled_markers[i], label="m="+str(i+1))
-
-    # plt.legend()
-    axs[0].set_ylim(-1.8, 1.8)
-    axs[0].set_xlim(-1.8, 1.8)
-    # ax.set_xticks([],[])
-    # ax.set_title('Channel Output')
-    plt.savefig('fig/t-SNR-cd-3-encoders.pdf', bbox_inches='tight')
-    plt.show()
-
-def load_and_plot_enc(gamma_list, f_dopp_norm, tf_base):
-    for gamma in gamma_list:
-        ft_tmp = ft_base + str(f'_f{f_dopp_norm:.3f}_gamma{gamma:.1f}') 
-        ## Load the encoder
-        encoder = models.Encoder_1h_n2_deeper_ee(M, n_r).to(device)
-        encoder.load_state_dict(torch.load('state_dict/encoder'+ft_tmp+'.pt'))
-        encoder.eval()
-        ## Plotting the Constellation
-        Constellation_Enc(encoder, M ,path='fig/Constellation'+ft_tmp+'.pdf', max_amp=4) 
-        Constellation_Enc_all(encoder, M, is_heatmap=True, s=2, bins=200, path='fig/ConstellationA'+ft_tmp+'.pdf', title=r'$\gamma=$'+str(gamma), max_amp=4)
-

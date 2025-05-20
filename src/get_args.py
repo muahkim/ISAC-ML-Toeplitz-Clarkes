@@ -6,8 +6,26 @@ def get_args():
     # Setup Parameters and get args
     ################################
     parser = argparse.ArgumentParser()
+    parser.add_argument('-TURBO', type=lambda x: x.lower() in ['true', '1', 'yes'], default=False,
+                        help='ture, 1, or yes is using TurboAE, anything else is using one-hot AE.')
+    parser.add_argument('-f_Dn', type=float, default=1,
+                        help='normalized Doppler frequency. If 1, uncorrelated fading. If 0, fully correlated.')
+    parser.add_argument('-loss_ratio_c_to_r', type=float, default=1,
+                        help='loss ratio between communication and sensing. 1 means training only for communication and 0 means training only for sensing.')
+    parser.add_argument('-training_strategy', choices=['likelihood_training', 'iterative_training', 'joint_training'], default='likelihood_training',
+                        help='Training algorithms.')
+    parser.add_argument('-only_groundtruth', type=lambda x: x.lower() in ['true', '1', 'yes'], default=True,
+                        help='For maximum likelihood decoding, when only_groundtruth is true, only the likelihood of the groundtruth is calculated..')
+    parser.add_argument('-loss_r', choices=['MCLB', 'CRLB'], default='MCLB',
+                        help='Loss function of sensing.')
+    parser.add_argument('-P', type=int, default=1,
+                        help='Number of dealy paths in sensing channel.')
+    parser.add_argument('-T', type=float, default=1e-9,
+                        help='Symbol duration.')
+    parser.add_argument('-tau_max', nargs='+', type=float, default=2.,
+                        help='List of maximum delay values of P paths as multiples of symbol duration. e.g., if tau_max = 2, then the maximum delay is 2T.')
 
-    parser.add_argument('-encoder', choices=['Turboae_rate3_rnn',      # TurboAE Encoder, rate 1/3, RNN
+    parser.add_argument('-encoder', choices=['TurboAE_rate3_rnn',      # TurboAE Encoder, rate 1/3, RNN
                                              'TurboAE_rate3_rnn_sys',  # TurboAE Encoder, rate 1/3, Systematic Bit hard coded.
                                              'TurboAE_rate3_cnn',      # TurboAE Encoder, rate 1/3, Same Shape 1D CNN encoded.
                                              'TurboAE_rate3_cnn_dense',# Dense Encoder of TurboAE Encoder, rate 1/3, Same Shape 1D CNN encoded.
@@ -23,7 +41,7 @@ def get_args():
                                              #'TurboAE_rate3_cnn2d_c'
                                             ],
                         default='TurboAE_rate3_cnn')
-    '''
+
     parser.add_argument('-decoder', choices=['TurboAE_rate3_rnn',      # TurboAE Decoder, rate 1/3
                                              'TurboAE_rate3_cnn',      # TurboAE Decoder, rate 1/3, Same Shape 1D CNN Decoder
                                              'TurboAE_rate3_cnn_dense',# Dense Encoder of TurboAE Decoder, rate 1/3
@@ -53,23 +71,27 @@ def get_args():
                                                'toeplitz'         # Toeplitz channel defined for ISAC
                                                ],
                         default = 'toeplitz')
+
+    # Modulation Type (Testing classical approach)
+    parser.add_argument('-mod_type', choices=['PSK', 'DPSK', 'ASK'], default='PSK')
+
     # Channel parameters
     parser.add_argument('-vv',type=float, default=5, help ='only for t distribution channel')
 
     parser.add_argument('-radar_prob',type=float, default=0.05, help ='only for radar distribution channel')
     parser.add_argument('-radar_power',type=float, default=5.0, help ='only for radar distribution channel')
-    '''
+
     # binary channels training algorithms (not tested yet~)
     parser.add_argument('-bec_p',type=float, default=0.0, help ='only for bec channel, enc')
     parser.add_argument('-bsc_p',type=float, default=0.0, help ='only for bsc channel, enc')
-    #parser.add_argument('-bec_p_dec',type=float, default=0.0, help ='only for bec channel, dec')
-    #parser.add_argument('-bsc_p_dec',type=float, default=0.0, help ='only for bsc channel, dec')
+    parser.add_argument('-bec_p_dec',type=float, default=0.0, help ='only for bec channel, dec')
+    parser.add_argument('-bsc_p_dec',type=float, default=0.0, help ='only for bsc channel, dec')
 
     # continuous channels training algorithms
     parser.add_argument('-train_enc_channel_low', type=float, default  = 1.0)
     parser.add_argument('-train_enc_channel_high', type=float, default = 1.0)
-    #parser.add_argument('-train_dec_channel_low', type=float, default  = -1.5)
-    #parser.add_argument('-train_dec_channel_high', type=float, default = 2.0)
+    parser.add_argument('-train_dec_channel_low', type=float, default  = -1.5)
+    parser.add_argument('-train_dec_channel_high', type=float, default = 2.0)
 
     parser.add_argument('-init_nw_weight', type=str, default='default')
 
@@ -80,8 +102,8 @@ def get_args():
     ################################################################
     # TurboAE encoder/decoder parameters
     ################################################################
-    parser.add_argument('-enc_rnn', choices=['gru', 'lstm', 'rnn'], default='gru')
-    #parser.add_argument('-dec_rnn', choices=['gru', 'lstm', 'rnn'], default='gru')
+    parser.add_argument('-enc_rnn', choices=['gru', 'lstm', 'rnn', 'mingru'], default='gru')
+    parser.add_argument('-dec_rnn', choices=['gru', 'lstm', 'rnn', 'mingru'], default='gru')
 
     parser.add_argument('-num_iteration', type=int, default=6)
     parser.add_argument('-extrinsic', type=int, default=1)
@@ -91,18 +113,19 @@ def get_args():
     parser.add_argument('-is_parallel', type=int, default=0)
     # CNN related
     parser.add_argument('-enc_kernel_size', type=int, default=5)
-    #parser.add_argument('-dec_kernel_size', type=int, default=5)
+    parser.add_argument('-dec_kernel_size', type=int, default=5)
 
     # CNN/RNN related
     parser.add_argument('-enc_num_layer', type=int, default=2)
-    #parser.add_argument('-dec_num_layer', type=int, default=5)
+    parser.add_argument('-enc_num_output_dim', type=int, default=1)
+    parser.add_argument('-dec_num_layer', type=int, default=5)
 
 
-    #parser.add_argument('-dec_num_unit', type=int, default=100, help = 'This is CNN number of filters, and RNN units')
+    parser.add_argument('-dec_num_unit', type=int, default=100, help = 'This is CNN number of filters, and RNN units')
     parser.add_argument('-enc_num_unit', type=int, default=100, help = 'This is CNN number of filters, and RNN units')
 
     parser.add_argument('-enc_act', choices=['tanh', 'selu', 'relu', 'elu', 'sigmoid', 'linear'], default='elu', help='only elu works')
-    #parser.add_argument('-dec_act', choices=['tanh', 'selu', 'relu', 'elu', 'sigmoid', 'linear'], default='linear')
+    parser.add_argument('-dec_act', choices=['tanh', 'selu', 'relu', 'elu', 'sigmoid', 'linear'], default='linear')
 
     parser.add_argument('-num_ber_puncture', type=int, default=5, help = 'Puncture bad BER positions')
 
@@ -110,13 +133,15 @@ def get_args():
     # Training ALgorithm related parameters
     ################################################################
     parser.add_argument('-joint_train', type=int, default=0, help ='if 1, joint train enc+dec, 0: seperate train')
-    #parser.add_argument('-num_train_dec', type=int, default=5, help ='')
+    parser.add_argument('-num_train_dec', type=int, default=5, help ='')
     parser.add_argument('-num_train_enc', type=int, default=1, help ='')
 
     parser.add_argument('-dropout',type=float, default=0.0)
 
-    parser.add_argument('-snr_test_start', type=float, default=-1.5)
-    parser.add_argument('-snr_test_end', type=float, default=4.0)
+    parser.add_argument('-snr_test_start', type=float, default=0.0)
+    parser.add_argument('-snr_test_end', type=float, default=20.0)
+    parser.add_argument('-snr_train_start', type=float, default=0.0)
+    parser.add_argument('-snr_train_end', type=float, default=20.0)
     parser.add_argument('-snr_points', type=int, default=12)
 
     parser.add_argument('-batch_size', type=int, default=128)
@@ -160,8 +185,10 @@ def get_args():
                         choices=['qpsk','symbol_power', 'block_power'],
                         default='block_power')
 
-    parser.add_argument('--no_code_norm', action='store_true', default=False,
+    parser.add_argument('-no_code_norm', action='store_true', default=False,
                         help='the output of encoder is not normalized. Modulation do the work')
+    parser.add_argument('--fixed_block_power', action='store_true', default=False,
+                        help='the output of encoder is power-normalized but not forced to be zero-mean.')
 
 
 

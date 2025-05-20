@@ -1,11 +1,6 @@
-# Loss Function for Diffusion Model
-# Original Source: https://github.com/acids-ircam/diffusion_models
-
-import torch
 import numpy as np
 import sys
 import scipy
-import math
 
 assert sys.version_info >= (3, 5)
 np.random.seed(42)
@@ -18,280 +13,323 @@ from channel_models import *
 import commpy.channelcoding.convcode as cc
 import commpy.modulation as modulation
 
-
-# Approximate 16 QAM Error
-
-def SIXT_QAM_sim(ebnodb):
-    return (3.0 / 2) * special.erfc(np.sqrt((4.0 / 10) * 10. ** (ebnodb / 10)))
+def cc_encoder(input_bits, code_rate=3):
+    # Memory elements per input bit (K-1)
 
 
-def BPSK_rayleigh(ebnodb, n, k):
-    ebn0 = 10. ** (ebnodb / 10)
-    return 0.5 * (1 - np.sqrt((n / k) * ebn0 / ((n / k) * ebn0 + 1)))
+    if code_rate == 1.5:
+        memory = np.array([2, 2])
+        # Define Rate 2/3 Convolutional Code with Constraint Length K=3
+        g_matrix = np.array([[0o7, 0o5, 0o0],  # input 1 contributes to output 1 and 2
+                             [0o0, 0o6, 0o3]])  # input 2 contributes to output 2 and 3
+    elif code_rate == 3:
+        memory = np.array([2])
+        # Define Rate 1/3 Convolutional Code with Constraint Length K=3
+        g_matrix = np.array([[7, 5, 6]])  # Generator polynomials in octal
+    elif code_rate == 4:
+        memory = np.array([2])
+        # Define Rate 1/4 Convolutional Code with Constraint Length K=3
+        g_matrix = np.array([[7, 5, 6, 3]])  # Generator polynomials in octal
+    else:
+        raise ValueError
+
+    # Create Trellis structure
+    trellis = cc.Trellis(memory, g_matrix)
+
+    # Encode using Convolutional Encoder
+    encoded_bits = cc.conv_encode(input_bits, trellis, termination='cont')
+    rate = g_matrix.shape[0] / g_matrix.shape[1]
+
+    return encoded_bits, trellis
+
+def random_interleaver(data, seed=None):
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(len(data))
+    interleaved = data[perm]
+    return interleaved, perm
+
+def random_deinterleaver(data, perm):
+    deinterleaved = np.empty_like(data)
+    deinterleaved[perm] = data  # Reverse the permutation
+    return deinterleaved
+
+def differential_encode(modulated_symbols, n, prev_symbol = 1 + 0j):
+    """Differentially encodes a sequence of already PSK-modulated symbols."""
+    # modulated_symbols: (-1,) np complex array
+    # prev_symbol: Initial reference symbol (can be 1+0j or any reference point)
+
+    modulated_symbols = modulated_symbols.reshape(-1, n-1) # chunk into blocks
+    encoded_symbols = np.zeros((modulated_symbols.shape[0], n), dtype=complex)
+    encoded_symbols[:, 0] = prev_symbol
+
+    for idx in range(modulated_symbols.shape[0]):
+        block = modulated_symbols[idx, :]
+        prev_symbol_block = prev_symbol
+        for i, symbol in enumerate(block):
+            encoded_symbols[idx, i+1] = prev_symbol_block * symbol  # Multiply with previous symbol
+            prev_symbol_block = encoded_symbols[idx, i+1]  # Update for next iteration
+
+    return encoded_symbols
+
+def differential_decode_mpsk(received_symb, M, n, modulation_table):
+    """Differentially decodes a sequence of M-PSK demodulated symbols."""
+    received_symb = np.reshape(received_symb, (-1, n))
+    decoded_symbols = np.zeros((received_symb.shape[0], n-1), dtype=int)
+
+    for idx in range(received_symb.shape[0]):
+        for i in range(1, n):
+            # Compute phase difference
+            vector_diff = received_symb[idx, i] * np.conj(received_symb[idx, i-1])
+            vector_diff_norm = vector_diff / np.linalg.norm(vector_diff)
+
+            # Map phase difference to closest M-PSK symbol
+            phase_diff_diff = np.abs(np.angle(modulation_table * np.conj(vector_diff_norm)))
+            symbol_dec = np.argmin(phase_diff_diff)
+            decoded_symbols[idx, i-1] = symbol_dec
+
+    decoded_symbols = np.reshape(decoded_symbols, (-1,))
+    decoded_symbols =  utils.dec2bin_digits(decoded_symbols, bits=int(math.log2(M)))
+    return decoded_symbols
 
 
-def MQAM_rayleigh_approx(M, ebnodb):
-    ebno = 10. ** (ebnodb / 10)
-    esno = 4 * ebno
-    # Goldsmith, p.185, 6.3.2, Eqn 6.61, alphaM=4, betaM=3/(M-1)
-    a = 3.25
-    b = 3 / (M - 1)
-    e = b * esno
-    return (a / 2) * (1 - np.sqrt(0.5 * e / (1 + 0.5 * e))), a / (2 * b * esno)
+def zero_small_parts(x: np.ndarray, threshold: float = 1e-10) -> np.ndarray:
+    # Suppress arbitrarly small values to zero.
+    real = np.real(x).copy()
+    imag = np.imag(x).copy()
+
+    # Set small values to zero
+    real[np.abs(real) < threshold] = 0
+    imag[np.abs(imag) < threshold] = 0
+
+    return real + 1j * imag
 
 
-def PSK(m, M, avg_power, device="cpu"):  # m is the message index
+def compute_gaussian_thresholds(variances):
+    """
+    Compute intersection thresholds between adjacent zero-mean Gaussians.
+    This is used for ML detection when ASK is used.
 
-    x = torch.zeros([m.shape[0], 2])  # complex channel
-    rad = torch.linspace(0, 2 * math.pi, steps=M + 1, device=device)[:M]  # phase
+    Parameters:
+    variances: list or array-like of floats
+        List of variances in ascending order.
 
-    x[:, 0] = math.sqrt(avg_power) * torch.cos(rad[m])
-    x[:, 1] = math.sqrt(avg_power) * torch.sin(rad[m])
-    return x
+    Returns:
+    thresholds: list of floats
+        List of positive thresholds where PDFs intersect.
+        Each threshold lies between variances[i] and variances[i+1].
+    """
+    variance = np.array(variances)
+    if not np.all(np.diff(variance) > 0):
+        raise ValueError("Variances must be in strictly ascending order.")
 
+    thresholds = []
+    for i in range(len(variances) - 1):
+        var1 = variances[i]
+        var2 = variances[i + 1]
+        numerator = np.log(var2 / var1)
+        denominator = (1 / var1) - (1 / var2)
+        x_squared = numerator / denominator
+        if x_squared < 0:
+            raise ValueError(f"Negative x^2 encountered between σ^2={variances[i]} and σ^2={variances[i + 1]}")
+        x = np.sqrt(x_squared)
+        thresholds.append(x)  # Only need one side, since distributions are symmetric
 
-def PSK_1h(m, avg_power):  # m is one-hot encdoed tensor
-    M = m.size()[1]  # message cardinality
-    label = torch.argmax(m, dim=1)
-
-    x = torch.zeros([m.size()[0], 2])  # complex channel
-    rad = torch.linspace(0, 2 * math.pi, steps=M + 1)[:M]  # phase
-
-    x[:, 0] = math.sqrt(avg_power) * torch.cos(rad[label])
-    x[:, 1] = math.sqrt(avg_power) * torch.sin(rad[label])
-    return x
-
-
-def hamming(bits):
-    # Return given 4 bits plus parity bits for bits (1,2,3), (2,3,4) and (1,3,4)
-    t1 = parity(bits, [0, 1, 3])
-    t2 = parity(bits, [0, 2, 3])
-    t3 = parity(bits, [1, 2, 3])
-    return t1 + t2 + bits[0] + t3 + bits[1:]  # again saying, works only for 7,4
-
-
-def parity(s, indicies):
-    # Compute the parity bit for the given string s and indices
-    sub = ""
-    for i in indicies:
-        sub += s[i]
-    return str(str.count(sub, "1") % 2)
+    return thresholds
 
 
-def qam16_mapper_n(m):
-    # m takes in a vector of messages
-    x = np.linspace(-3, 3, 4)
-    y = np.meshgrid(x, x)
-    z = np.array(y).reshape(2, 16)
-    z = z / np.std(z)
+class ASKModem:
+    def __init__(self, M, noise_std=None):
+        assert M >= 2 and ((M & (M - 1)) == 0), "M must be a power of 2"
+        self.M = M
+        self.k = int(np.log2(M))  # bits per symbol
 
-    return np.array([[z[0][i], z[1][i]] for i in m])
+        # ASK constellation: [0, 1, ..., M-1]
+        self.constellation = np.arange(M, dtype=np.float64)
+        # Normalize average energy to 1
+        self.constellation /= np.sqrt(np.mean(self.constellation**2))
+        self.A = self.constellation[1]
+        if noise_std is not None:
+            variances = [(m**2 * self.A **2 + noise_std**2) for m in range(M)] # noise variance of in ascending order
+            self.thresholds = compute_gaussian_thresholds(variances)
+
+    def modulate(self, bits):
+        symbols = []
+        for i in range(0, len(bits), self.k):
+            b = bits[i:i+self.k]
+            idx = int("".join(str(x) for x in b), 2)
+            symbols.append(self.constellation[idx])
+        return np.array(symbols)
+
+    def demodulate(self, rx_signal, thresholds):
+        """
+        Demodulate a complex-valued received signal using real part and given thresholds.
+        It is ML detector when the channel is Rayleigh fading channel with AWGN.
+
+        Parameters:
+        rx_signal: array-like of complex numbers
+            The received noisy symbols from the channel.
+        thresholds: list of floats
+            Decision thresholds (positive values), assumed symmetric about 0.
+            Should be in ascending order.
+
+        Returns:
+        symbols: np.ndarray of ints
+            Demodulated symbol indices (e.g., 0, 1, 2, ..., M-1)
+        """
+        thresholds = np.array(self.thresholds)
+        abs_part = np.abs(rx_signal)
+
+        # Use np.digitize to assign region indexes based on thresholds
+        # Bins go from -0 to first threshold, first to second, ..., last to +inf
+        symbol_indices = np.digitize(abs_part, thresholds)
+
+        return symbol_indices
+
+    def demodulate_NN(self, symbols, threshold=None, mode='hard'):
+        # Minimum distance decoding / Nearest Neighbor Rule
+        indices = np.argmin(np.abs(symbols[:, None] - self.constellation[None, :])**2, axis=1)
+        bits = [list(np.binary_repr(i, width=self.k)) for i in indices]
+        return np.array(bits, dtype=int).flatten()
 
 
-def qam_mapper_n(m, M):
-    # m takes in a vector of messages
-    # M is the cardinality of message. Should be a power of 2.
-    x = np.linspace(-3, 3, int(M ** 0.5))
-    y = np.meshgrid(x, x)
-    z = np.array(y).reshape(2, M)
-    z = z / np.std(z) / (2 ** 0.5)
-    return np.array([[z[0][i], z[1][i]] for i in m])
-
-
-def cc_mapper(k, M_qam, rep=2, mod_type='PSK'):
-    # m is the integer messages
-    # k is the input bit sequence length
-    M = int(2 ** k)
-    m = np.arange(M, dtype=int)
-    ##  binary representation of the messages.
-    m_ = np.zeros((M, k * rep), dtype=int)
-    for i in m:
-        str_tmp = np.binary_repr(i, width=int(k)) * rep
-        for j in range(k * rep):
-            m_[i, j] = int(str_tmp[j])
-    ##  repetition.
-    np.random.seed(42)
-    message_bits = np.zeros_like(m_)
-    coded_bits = np.zeros((M, 2 * rep * k), dtype=int)
-    modulated = np.zeros((M, int(2 * rep * k / math.log2(M_qam))), dtype=complex)
-    generator_matrix = np.array([[5, 7]])  # generator branches
-
-    trellis = cc.Trellis(np.array([M_qam]), generator_matrix)  # Trellis structure
-    if mod_type == 'PSK':
-        modem = modulation.PSKModem(M_qam)  # M-PSK modem initialization
+def modulator(bit_seq, M_mod, mod_type):
+    ## Define modulator
+    if mod_type in {'PSK', 'DPSK'}:
+        modem = modulation.PSKModem(M_mod)  # M-PSK modem initialization
     elif mod_type == 'QAM':
-        modem = modulation.QAMModem(M_qam)
+        modem = modulation.QAMModem(M_mod)
+    elif mod_type == 'ASK':
+        modem = ASKModem(M_mod)
     else:
         assert False
-    for i in range(M):
-        np.random.seed(42) # this is to fix the interleaving randomness
-        m_tmp = m_[i, :]
-        ##   encoding with a convolutonal code and interleaving randomly
-        coded_bits_tmp =  cc.conv_encode(m_tmp, trellis, termination='cont')
-        np.random.shuffle(coded_bits_tmp)
-        coded_bits[i, :] = coded_bits_tmp  # encoding and interleaving
-        
-        ##   QAM
-        modulated[i, :] = modem.modulate(coded_bits[i, :])
 
-    if mod_type == 'QAM':
-        modulated = modulated / (10 ** 0.5)  # modulation
-    return modulated
+    modulated_symb = modem.modulate(bit_seq)
 
+    return modulated_symb
 
-def test_ER_CC(M, n, M_qam, snr_range, cov, device, rep=2, num_samples=10 ** 5,
-               batch_size=100, mod_type='PSK'):  # with repetition code.
-    k = int(math.log2(M))
-    rate = k / n
-    BER_AE_seq = []
-    SER_AE_seq = []
-    table = torch.tensor(cc_mapper(k, M_qam, rep, mod_type), dtype=torch.cfloat)
-    # for checking the power constraint
-    print(torch.sum(torch.view_as_real(table).view(M, -1) ** 2, dim=1))
+def demodulator(received_seq, M_mod, mod_type, noise_std=None):
+    ## Define demodulator
+    if mod_type in {'PSK', 'DPSK'} :
+        modem = modulation.PSKModem(M_mod)  # M-PSK modem initialization
+    elif mod_type == 'QAM':
+        modem = modulation.QAMModem(M_mod)
+    elif mod_type == 'ASK':
+        modem = ASKModem(M_mod, noise_std)
+    else:
+        assert False
 
-    def run_epoch():
-        m = np.random.randint(low=0, high=M, size=[num_samples])
-        m_batched = np.split(m, num_samples // batch_size)
-        ber_batch = []
-        ser_batch = []
-        for m in m_batched:
-            m_ = [np.binary_repr(i, width=int(k)) for i in m] # repetition coding
-            x_qam_c = table[m, :] # modulation
-            y_c, h_c = ch_corr_Rayleigh_by_cov(x_qam_c, cov, AWGN_std_c, device)
+    return modem.demodulate(received_seq, 'hard')
 
-            prob, m_hat = utils.ML_det_Rayleigh_ncd(y_c, table, cov, AWGN_std_c)
-            bool_sym = torch.ne(torch.tensor(m, dtype=int), m_hat.int().view(-1))
-            SER_tmp = torch.sum(bool_sym) / m_hat.shape[0]
+def test_ER_CC_Mod_batched(n, M_mod, channel_model, snr_range, k, code_rate=3, num_samples=10 ** 8, batch_size=10 ** 3, mod_type='PSK'):
+    num_batches = num_samples // batch_size
+    BER_per_SNR = []
 
-            labels_bin = torch.squeeze(utils.dec2bin(torch.tensor(m, dtype=int), k))
-            m_d_bin = torch.squeeze(utils.dec2bin(m_hat.int(), k))
-            ne = torch.ne(labels_bin, m_d_bin)
-            BER_tmp = torch.mean(ne.float())
+    if mod_type == 'DPSK':
+        all_bit_seq = dec2bin_digits(np.arange(M_mod), int(math.log2(M_mod)))
+        all_bit_seq = all_bit_seq.reshape(-1, 1)
+        modulation_table = modulator(all_bit_seq, M_mod, mod_type)
+        modulation_table = zero_small_parts(modulation_table)
+    else:
+        modulation_table = None
+    for snr in tqdm(snr_range, desc="testing"):
 
-            ber_batch.append(BER_tmp.item())
-            ser_batch.append(SER_tmp.item())
-        return np.mean(ber_batch), np.mean(ser_batch)
+        noise_std = utils.SNR_to_noise(snr)
+        BER_list = []
+        #pbar = tqdm(range(num_batches), desc="Batches", miniters=num_batches//5)
+        for it in range(num_batches):
+            BER_batch = test_ER_CC_Mod(n, M_mod, channel_model, noise_std, k, code_rate=code_rate, num_samples=batch_size, mod_type=mod_type, modulation_table=modulation_table)
+            BER_list.append(BER_batch)
 
-    for epoch, snr in enumerate(snr_range):
-        AWGN_std_c = utils.EbNo_to_noise(snr, rate)  # for a normalized signal (per symbol)
+            if (it+1) % (num_batches//100) == 0:
+                BER_array = np.array(BER_list)
+                print(f"Iteration {it} BER {np.mean(BER_array, axis=0):.4e}")
 
-        tmp_ser = 0
-        tmp_ber = 0
+        BER_array = np.array(BER_list)
+        BER_per_SNR.append(np.mean(BER_array, axis=0))
 
-        it_in_while = 0
-        while tmp_ber * num_samples * (
-                it_in_while) < 1000:  # To guarantee we have enough samples for the Monte-Carlo method.
-            if it_in_while > 1:
-                print(
-                    f"epoch {epoch} The number of samples is not enough. One more epoch is running. Total # of samples used: ",
-                    num_samples * it_in_while)
-            tmp_ber2, tmp_ser2 = run_epoch()
-            tmp_ser = (it_in_while * tmp_ser + tmp_ser2) / (
-                    it_in_while + 1)  # taking average of the error probability.
-            tmp_ber = (it_in_while * tmp_ber + tmp_ber2) / (it_in_while + 1)
-            it_in_while += 1
-
-        # ser.append(tmp_ser)
-        BER_AE_seq.append(tmp_ber)
-        SER_AE_seq.append(tmp_ser)
-    return BER_AE_seq, SER_AE_seq
+        print(f"\nSNR: {snr}, BER: {BER_per_SNR[-1]:.3e}")
 
 
-def test_MSE_CC(M, n, M_qam, snr_range, cov, device, rep=2, mod_type='PSK', num_samples=10 ** 5,
-                batch_size=100):  # with repetition code.
-    MSE_AE_seq_qam = []
-    k = int(math.log2(M))
+    return BER_per_SNR
 
-    table = torch.tensor(cc_mapper(k, M_qam, rep, mod_type), dtype=torch.cfloat, device=device)
-    #print(torch.mean(torch.sum(torch.view_as_real(table).view(M, -1) ** 2, dim=1)))
+def test_ER_CC_Mod(n, M_mod, channel_model, noise_std, k, code_rate=3, num_samples=10 ** 5, mod_type='PSK', modulation_table=None, interleaving=False):
+    # Generate a random input sequence
+    np.random.seed(42)
+    num_message_bits = int(num_samples // k * k) # make it multiple of the block length,
 
-    def run_epoch():
-        m = np.random.randint(low=0, high=M, size=[num_samples])
-        m_batched = np.split(m, num_samples // batch_size)
-        MSE_batch = []
-        for m in m_batched:
-            m_ = [np.binary_repr(i, width=int(k)) for i in m]
-            x_qam_c = table[m, :]
-            # _, y_r, _, h_r, _ = channels_by_cov_2mat_nb(x_psk_c, cov, 0, AWGN_std_r, device)
-            y_r, h_r = ch_corr_Rayleigh_by_cov(x_qam_c, cov, AWGN_std_r, device)
-            # H_r_hat = MMSE_H_estimator_iid(x_psk_c, y_r, AWGN_std_r)
-            h_r_hat = utils.MMSE_H_estimator_corr(x_qam_c, y_r, AWGN_std_r, cov)
-            ## BER
-            MSE_tmp = utils.MSE_c(h_r, h_r_hat)
-            MSE_batch.append(MSE_tmp.detach().cpu().numpy())
-        return np.mean(MSE_batch)
+    message_bits = np.random.randint(0, 2, num_message_bits)
+    encoded_bits, trellis = cc_encoder(message_bits, code_rate=code_rate)
 
-    for epoch, snr in enumerate(snr_range):
-        AWGN_std_r = utils.EbNo_to_noise(snr, k / n)  # for a normalized signal (per symbol)
-        tmp_mse = 0
-        it_in_while = 0
-        while tmp_mse * num_samples * (
-                it_in_while) < 1000:  # To guarantee we have enough samples for the Monte-Carlo method.
-            if it_in_while > 1:
-                print(
-                    f"epoch {epoch} The number of samples is not enough. One more epoch is running. Total # of samples used: ",
-                    num_samples * it_in_while)
-            tmp_mse2 = run_epoch()
-            tmp_mse = (it_in_while * tmp_mse + tmp_mse2) / (
-                    it_in_while + 1)  # taking average of the error probability.
-            it_in_while += 1
-        # ser.append(tmp_ser)
-        MSE_AE_seq_qam.append(tmp_mse)
-    return MSE_AE_seq_qam
+    modulated_symb = modulator(encoded_bits, M_mod, mod_type)
+    modulated_symb = zero_small_parts(modulated_symb)
 
+    truncated_len = (modulated_symb.shape[0] // n) * n
+    modulated_symb = modulated_symb[:truncated_len]
 
-def test_MSE_OOK(M, n, snr_range, cov, device, num_samples=10 ** 5, batch_size=100):
-    MSE_AE_seq_ook = []
-    k = int(math.log2(M))
+    if mod_type == 'DPSK':
+        modulated_symb = differential_encode(modulated_symb, n)
+    else:
+        modulated_symb = np.reshape(modulated_symb, (-1, n))
 
-    def run_epoch():
-        m = np.random.randint(low=0, high=M, size=[num_samples])
-        m_batched = np.split(m, num_samples // batch_size)
-        MSE_batch = []
-        for m in m_batched:
-            x_ook = torch.zeros(batch_size, n, dtype=torch.cfloat, device=device)
-            x_ook[:, 0] = n ** 0.5 + 0j
-            y_r, h_r = ch_corr_Rayleigh_by_cov(x_ook, cov, AWGN_std_r, device)
-            # H_r_hat = MMSE_H_estimator_iid(x_psk_c, y_r, AWGN_std_r)
-            h_r_hat = utils.MMSE_H_estimator_corr(x_ook, y_r, AWGN_std_r, cov).to(device)
-            MSE_tmp = utils.MSE_c(h_r, h_r_hat)
-            MSE_batch.append(MSE_tmp.detach().cpu().numpy())
-        return np.mean(MSE_batch)
+    #sigma = np.sum(modulated_symb * modulated_symb.conj(), axis=1) ** 0.5 # magnitude of each block
+    #modulated_symb_power_norm = modulated_symb / np.reshape(sigma, (-1,1)) * sqrt(n)
+    #modulated_symb_torch = torch.from_numpy(modulated_symb_power_norm)
+    modulated_symb_torch = torch.from_numpy(modulated_symb)
 
-    for epoch, snr in enumerate(snr_range):
-        AWGN_std_r = utils.EbNo_to_noise(snr, k / n)  # for a normalized signal (per symbol)
+    received_symb, h = channel_model(modulated_symb_torch, noise_std=noise_std)
+    received_symb_scale_back = received_symb.cpu().numpy() #/ sqrt(n) * np.reshape(sigma, (-1,1))
+    received_symb_scale_back = np.reshape(received_symb_scale_back, (-1,))
 
-        tmp_mse = 0
+    if mod_type == 'DPSK':
+        demodulated_bits = differential_decode_mpsk(received_symb_scale_back, M_mod, n, modulation_table)
+    else:
+        demodulated_bits = demodulator(received_symb_scale_back, M_mod, mod_type, noise_std=noise_std)
+    demodulated_bits = np.reshape(demodulated_bits, (-1,))
 
-        it_in_while = 0
-        while tmp_mse * num_samples * (
-                it_in_while) < 1000:  # To guarantee we have enough samples for the Monte-Carlo method.
-            if it_in_while > 1:
-                print(
-                    f"epoch {epoch} The number of samples is not enough. One more epoch is running. Total # of samples used: ",
-                    num_samples * it_in_while)
-            tmp_mse2 = run_epoch()
-            tmp_mse = (it_in_while * tmp_mse + tmp_mse2) / (
-                    it_in_while + 1)  # taking average of the error probability.
-            it_in_while += 1
+    decoded_bits = cc.viterbi_decode(demodulated_bits, trellis)
+    decoded_bits = np.reshape( decoded_bits, (-1,))
+    message_bits = np.reshape( message_bits, (-1,))
+    demodulated_bits = np.reshape(decoded_bits, (-1,))
 
-        # ser.append(tmp_ser)
-        MSE_AE_seq_ook.append(tmp_mse)
-    return MSE_AE_seq_ook
+    ne = np.not_equal(decoded_bits[:], message_bits[:decoded_bits.shape[0]])
+    ne1 = np.not_equal(demodulated_bits, encoded_bits[:demodulated_bits.shape[0]])
+
+    BER_tmp = np.mean(ne.astype(float))
+    '''
+    ### To test the CC
+    decoded_bits_CC = cc.viterbi_decode(encoded_bits, trellis)
+    ne = np.not_equal(decoded_bits_CC[:message_bits.shape[0]], message_bits)
+    BER_only_CC = np.mean(ne.astype(float))
+    print(f"BER only encoding and decoding of CC: {BER_only_CC:.3e}")
+    ###
+
+    ### To test modulation
+    modulated_symb_torch_test = modulated_symb_torch.view(-1,)
+    if mod_type == 'DPSK':
+        demodulated_bits_test = differential_decode_mpsk(modulated_symb_torch_test.cpu().numpy(), M_mod, n, modulation_table)
+    else:
+        demodulated_bits_test = demodulator(modulated_symb_torch_test.cpu().numpy(), M_mod, mod_type, noise_std=noise_std)
+    demodulated_bits_test = np.reshape(demodulated_bits_test, (-1,))
+    ne_mod = np.not_equal(demodulated_bits_test, encoded_bits[:demodulated_bits_test.shape[0]])
+    BER_mod = np.mean(ne_mod.astype(float))
+    print(f"BER from modulation without channel: {BER_mod}." )
+    '''
+
+    return BER_tmp
 
 def Rayleigh_covariance_generator(N, f_dopp_norm, dtype_cov=torch.cfloat):
     # parameter scaling
     # the zeroth Bessel function
     # put the function output in the N x N matrix correctly.
-    assert f_dopp_norm < 1 and f_dopp_norm > 0, "The normalized doppler frequency out of range. It should be in (0,1)."
+    assert f_dopp_norm <= 1 and f_dopp_norm >= 0, "The normalized doppler frequency out of range. It should be in (0,1)."
     arg = 2 * math.pi * f_dopp_norm
 
     cov = torch.empty(N, N, dtype=dtype_cov)
     for i in range(N):
         for j in range(N):
-            cov[i,j] = scipy.special.jv(0, arg * (j-i))
+            cov[i,j] = scipy.special.j0(arg * abs(j-i))
             if i is not j:
-                cov[i,j] = cov[i,j] - 2**(-10)
+                cov[i,j] = cov[i,j] #- 2**(-10)
 
 
     #cov += 1e-6 * torch.eye(N, dtype=dtype_cov)
@@ -299,3 +337,6 @@ def Rayleigh_covariance_generator(N, f_dopp_norm, dtype_cov=torch.cfloat):
     #cov = (cov + cov.T.conj()) / 2  # Ensure Hermitian symmetry
 
     return cov
+
+
+
