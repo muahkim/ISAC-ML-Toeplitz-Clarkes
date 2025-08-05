@@ -177,8 +177,8 @@ class Trainer:
         k = int(math.log2(M))
         n = config.n
 
-        if config.loss_r == 'MCLB':
-            loss_fn_r = utils.MCLB_mean
+        if config.loss_r == 'MCRB':
+            loss_fn_r = utils.MCRB_mean
         elif config.loss_r == 'CRLB':
             loss_fn_r = utils.CRLB_mean
         else:
@@ -262,7 +262,7 @@ class Trainer:
                 else:
                     # Sensing Loss.
                     snr_random = config.args.snr_train_start - config.args.snr_train_end * np.random.rand(bs, 1) + config.args.snr_train_end
-                    noise_std = torch.from_numpy(utils.SNR_to_noise(snr_random)).to(device) # For sensing, it should be the same N0 for all instances to make the MCLB to hold.
+                    noise_std = torch.from_numpy(utils.SNR_to_noise(snr_random)).to(device) # For sensing, it should be the same N0 for all instances to make the MCRB to hold.
 
                     y_r, h_s_a, tau_s_a = self.channel_s(x_, N0= 2 * noise_std ** 2)
 
@@ -381,8 +381,8 @@ class Trainer:
         if noise_std==None:
             noise_std = self.config.args.snr_points
 
-        if config.loss_r == 'MCLB':
-            loss_fn_r = utils.MCLB_mean
+        if config.loss_r == 'MCRB':
+            loss_fn_r = utils.MCRB_mean
         elif config.loss_r == 'CRLB':
             loss_fn_r = utils.CRLB_mean
         else:
