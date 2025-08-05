@@ -7,8 +7,6 @@ venv/
 .git/
 .idea/
 
-figures/*
-state_dict/*
 
 # Ignore build artifacts
 /dist
