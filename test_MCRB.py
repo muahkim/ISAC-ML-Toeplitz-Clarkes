@@ -1,7 +1,7 @@
 import sys
 
 sys.path.append('src')
-from src.utils import SNR_to_noise, CRLB_mean, MCLB_mean
+from src.utils import SNR_to_noise, CRLB_mean, MCRB_mean
 
 from src.utils_plot import *
 from src.get_args import get_args
@@ -74,15 +74,15 @@ def test_LB(N, M_mod, T, tau_max, N0, num_samples=10*6, batch_size=500, mod_type
         tau_vals = np.random.uniform(size=(modulated_symb.shape[0])) * tau_max
         modulated_symb = torch.from_numpy(modulated_symb).to(device)
 
-        if args.loss_r == "MCLB":
+        if args.loss_r == "MCRB":
             h_s_a = torch.ones(batch_size, device=device)
-            LB = MCLB_mean(N0, h_s_a, modulated_symb, tau_vals, T)
+            LB = MCRB_mean(N0, h_s_a, modulated_symb, tau_vals, T)
         elif args.loss_r == "CRLB":
             h_s_a = torch.normal(0, (1 / 2) ** 0.5, size=((modulated_symb.shape[0])), device=device) \
                     + 1j * torch.normal(0, (1 / 2) ** 0.5, size=((modulated_symb.shape[0])), device=device)
             LB = CRLB_mean(N0, h_s_a, modulated_symb, tau_vals, T, eps=1e-6)
         else:
-            ValueError("loss_r must be either MCLB or CRLB")
+            ValueError("loss_r must be either MCRB or CRLB")
         if LB < 10 ** 6:
             LBs.append(LB.cpu().numpy())
     return np.mean(LBs)

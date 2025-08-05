@@ -829,12 +829,12 @@ def CRLB_mean(N0, h_s_a, x, tau_s_a, T, eps=1e-6):
     CRLB = torch.mean(J_aa) # Miller Chang bound # normalization added.
     return CRLB
 
-def MCLB_mean(N0, dummy, x, tau_s_a, T, eps=1e-6):
+def MCRB_mean(N0, dummy, x, tau_s_a, T, eps=1e-6):
     num_samples = x.size(0)
     h_s_a = np.ones(num_samples)
     J_aa = 1 / ( FIM_diag_Toeplitz_delay(N0, h_s_a, x, tau_s_a, T) + eps )
-    MCLB = torch.mean(J_aa) # Miller Chang bound # normalization added.
-    return MCLB
+    MCRB = torch.mean(J_aa) # Miller Chang bound # normalization added.
+    return MCRB
 
 
 
