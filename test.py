@@ -21,18 +21,9 @@ from src.get_args import get_args
 args = get_args()
 print(args)
 
-## To turn on TurboAE-based source code
-TURBO = args.TURBO
 
 ## Training algorithm
 training_strategy = args.training_strategy
-
-if training_strategy == 'likelihood_training':
-    loss_c = 'likelihood'
-elif training_strategy in {'iterative_training', 'joint_training'}:
-    loss_c = 'decoder'
-else:
-    raise ValueError('Invalid training strategy. Valid options: likelihood_training, iterative_training, joint_training')
 
 
 ###############################################
@@ -79,52 +70,45 @@ dataset_size = batch_size * 100
 generate_dataset = False
 
 
-if TURBO:
-    binary = True  # If true, encoder takes binary input. If false, encoder takes onehot encoded inputs.
 
-    #################################################
-    # Setup Channel AE: Encoder, Decoder, Channel
-    #################################################
-    # choose encoder and decoder.
-    encoder_ML = import_enc(args)
-    decoder_ML = import_dec(args)
+#################################################
+# Setup Channel AE: Encoder, Decoder, Channel
+#################################################
+# choose encoder and decoder.
+encoder_ML = import_enc(args)
+decoder_ML = import_dec(args)
 
-    # setup interleaver.
-    if args.is_interleave == 1:  # fixed interleaver.
-        seed = np.random.randint(0, 1)
-        rand_gen = mtrand.RandomState(seed)
-        p_array1 = rand_gen.permutation(arange(args.block_len))
-        p_array2 = rand_gen.permutation(arange(args.block_len))
+# setup interleaver.
+if args.is_interleave == 1:  # fixed interleaver.
+    seed = np.random.randint(0, 1)
+    rand_gen = mtrand.RandomState(seed)
+    p_array1 = rand_gen.permutation(arange(args.block_len))
+    p_array2 = rand_gen.permutation(arange(args.block_len))
 
-    elif args.is_interleave == 0:
-        p_array1 = range(args.block_len)  # no interleaver.
-        p_array2 = range(args.block_len)  # no interleaver.
-    else:
-        seed = np.random.randint(0, args.is_interleave)
-        rand_gen = mtrand.RandomState(seed)
-        p_array1 = rand_gen.permutation(arange(args.block_len))
-        seed = np.random.randint(0, args.is_interleave)
-        rand_gen = mtrand.RandomState(seed)
-        p_array2 = rand_gen.permutation(arange(args.block_len))
-
-    print('using random interleaver', p_array1, p_array2)
-
-    if args.encoder == 'turboae_2int' and args.decoder == 'turboae_2int':
-        encoder = encoder_ML(args, p_array1, p_array2)
-        decoder = decoder_ML(args, p_array1, p_array2)
-    else:
-        encoder = encoder_ML(args, p_array1)
-        decoder = decoder_ML(args, p_array1)
-
-    encoder = encoder.to(device)
-    decoder = decoder.to(device)
-
+elif args.is_interleave == 0:
+    p_array1 = range(args.block_len)  # no interleaver.
+    p_array2 = range(args.block_len)  # no interleaver.
 else:
-    binary = False
-    encoder = models.Encoder_1h_n2_deeper_ee(M, n_r).to(device)
-    decoder = models.Decoder_1h(k, M, n_r).to(device)
-    args.encoder = 'mlp'
-    args.decoder = 'mlp'
+    seed = np.random.randint(0, args.is_interleave)
+    rand_gen = mtrand.RandomState(seed)
+    p_array1 = rand_gen.permutation(arange(args.block_len))
+    seed = np.random.randint(0, args.is_interleave)
+    rand_gen = mtrand.RandomState(seed)
+    p_array2 = rand_gen.permutation(arange(args.block_len))
+
+print('using random interleaver', p_array1, p_array2)
+
+if args.encoder == 'turboae_2int' and args.decoder == 'turboae_2int':
+    encoder = encoder_ML(args, p_array1, p_array2)
+    decoder = decoder_ML(args, p_array1, p_array2)
+else:
+    encoder = encoder_ML(args, p_array1)
+    decoder = decoder_ML(args, p_array1)
+
+encoder = encoder.to(device)
+decoder = decoder.to(device)
+
+
 
 ###############################################
 # Channels are defined by the given parameters
@@ -146,12 +130,12 @@ t_conf = trainer.TrainerConfig(M=M, k=k, n=n, n_r=n_r, rate=rate, f_dopp_norm=f_
                                 P=P, T=T, tau_max=tau_max, epoch_loaded = milestone_to_load-1,
                                 epoch_loaded_dec = milestone_to_load_dec,
                                 dataset_size=dataset_size,
-                                batch_size=batch_size, binary=binary,
-                                training_strategy=training_strategy, loss_c = loss_c,
+                                batch_size=batch_size,
+                                training_strategy=training_strategy,
                                 loss_ratio_c_to_r=loss_ratio_c_to_r, auto_save=auto_save,
                                 path=path, device=device, args=args, generate_dataset=generate_dataset)
 
-t_joint = trainer.Trainer(encoder, t_conf, dec=decoder, TURBO=TURBO)
+t_joint = trainer.Trainer(encoder, t_conf, dec=decoder)
 
 
 if LOADMODEL:  ## To load the model if necessary.

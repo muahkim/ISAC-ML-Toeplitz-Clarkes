@@ -21,24 +21,9 @@ from src.get_args import get_args
 args = get_args()
 print(args)
 
-## To turn on TurboAE-based source code
-TURBO = args.TURBO
-
 ## Training algorithm
-## Available choices: 'likelihood_training' # 'joint_training' # 'iterative_training',
+## Available choices:  'joint_training' 'iterative_training',
 training_strategy = args.training_strategy
-#loss_c = 'likelihood' # 'likelihood' and 'decoder'
-
-#if args.f_Dn == 0:
-#    training_strategy = 'likelihood_training'
-if training_strategy == 'likelihood_training':
-    loss_c = 'likelihood'
-elif training_strategy in {'iterative_training', 'joint_training'}:
-    loss_c = 'decoder'
-else:
-    raise ValueError('Invalid training strategy. Valid options: likelihood_training, iterative_training, joint_training')
-
-loss_r = args.loss_r
 
 
 ###############################################
@@ -52,7 +37,6 @@ device = torch.device("cuda" if use_cuda else "cpu")
 #################################################
 loss_ratio_c_to_r = args.loss_ratio_c_to_r  # float in [0,1]. loss ratio between communication and sensing. 1 means training only for communication and 0 means training only for sensing.
 
-#LOADMODEL               = False     # If you want to load a model trained previously.
 milestone_to_load       = args.load_epoch    # If loading a model, set the milestone to load. It is saved as epoch+1.
 milestone_to_load_dec   = args.load_epoch
 if args.load_epoch > 0:
@@ -80,7 +64,7 @@ if P > 1:
     assert len(tau_max) == P, "The length of tau_max should be equal to P."
 
 lr_seq = [1e-4, 1e-5] # list of learning rates for training.
-ep_seq = [50, 100]#, 20]#, 10]       # list of number of epochs for each learning rate.
+ep_seq = [50, 100]    # list of number of epochs for each learning rate.
 assert len(lr_seq) == len(ep_seq), "the length of lr_seq and ep_seq should be the same."
 
 path = 'state_dict/'        # path to save and load models.
@@ -96,53 +80,45 @@ dataset_size = batch_size * args.num_block
 generate_dataset = False
 
 
-if TURBO:
-    binary = True  # If true, encoder takes binary input. If false, encoder takes onehot encoded inputs.
+#################################################
+# Setup Channel AE: Encoder, Decoder, Channel
+#################################################
+# choose encoder and decoder.
 
-    #################################################
-    # Setup Channel AE: Encoder, Decoder, Channel
-    #################################################
-    # choose encoder and decoder.
+encoder_ML = import_enc(args)
+decoder_ML = import_dec(args)
 
-    encoder_ML = import_enc(args)
-    decoder_ML = import_dec(args)
+# setup interleaver.
+if args.is_interleave == 1:  # fixed interleaver.
+    seed = np.random.randint(0, 1)
+    rand_gen = mtrand.RandomState(seed)
+    p_array1 = rand_gen.permutation(arange(args.block_len))
+    p_array2 = rand_gen.permutation(arange(args.block_len))
 
-    # setup interleaver.
-    if args.is_interleave == 1:  # fixed interleaver.
-        seed = np.random.randint(0, 1)
-        rand_gen = mtrand.RandomState(seed)
-        p_array1 = rand_gen.permutation(arange(args.block_len))
-        p_array2 = rand_gen.permutation(arange(args.block_len))
-
-    elif args.is_interleave == 0:
-        p_array1 = range(args.block_len)  # no interleaver.
-        p_array2 = range(args.block_len)  # no interleaver.
-    else:
-        seed = np.random.randint(0, args.is_interleave)
-        rand_gen = mtrand.RandomState(seed)
-        p_array1 = rand_gen.permutation(arange(args.block_len))
-        seed = np.random.randint(0, args.is_interleave)
-        rand_gen = mtrand.RandomState(seed)
-        p_array2 = rand_gen.permutation(arange(args.block_len))
-
-    print('using random interleaver', p_array1, p_array2)
-
-    if args.encoder == 'turboae_2int' and args.decoder == 'turboae_2int':
-        encoder = encoder_ML(args, p_array1, p_array2)
-        decoder = decoder_ML(args, p_array1, p_array2)
-    else:
-        encoder = encoder_ML(args, p_array1)
-        decoder = decoder_ML(args, p_array1)
-
-    encoder = encoder.to(device)
-    decoder = decoder.to(device)
-
+elif args.is_interleave == 0:
+    p_array1 = range(args.block_len)  # no interleaver.
+    p_array2 = range(args.block_len)  # no interleaver.
 else:
-    binary = False
-    encoder = models.Encoder_1h_n2_deeper_ee(M, n_r).to(device)
-    decoder = models.Decoder_1h(k, M, n_r).to(device)
-    args.encoder = 'mlp'
-    args.decoder = 'mlp'
+    seed = np.random.randint(0, args.is_interleave)
+    rand_gen = mtrand.RandomState(seed)
+    p_array1 = rand_gen.permutation(arange(args.block_len))
+    seed = np.random.randint(0, args.is_interleave)
+    rand_gen = mtrand.RandomState(seed)
+    p_array2 = rand_gen.permutation(arange(args.block_len))
+
+print('using random interleaver', p_array1, p_array2)
+
+if args.encoder == 'turboae_2int' and args.decoder == 'turboae_2int':
+    encoder = encoder_ML(args, p_array1, p_array2)
+    decoder = decoder_ML(args, p_array1, p_array2)
+else:
+    encoder = encoder_ML(args, p_array1)
+    decoder = decoder_ML(args, p_array1)
+
+encoder = encoder.to(device)
+decoder = decoder.to(device)
+
+
 
 ###############################################
 # Channels are defined by the given parameters
@@ -163,12 +139,12 @@ t_conf = trainer.TrainerConfig(M=M, k=k, n=n, n_r=n_r, rate=rate, f_dopp_norm=f_
                             P=P, T=T, tau_max=tau_max, epoch_loaded = milestone_to_load-1,
                             epoch_loaded_dec = milestone_to_load_dec, LOADMODEL=LOADMODEL,
                             max_epochs=ep_seq, dataset_size=dataset_size,
-                            batch_size=batch_size, lr_enc=lr_seq, binary=binary,
-                            training_strategy=training_strategy, loss_c = loss_c, loss_r = loss_r,
-                            loss_ratio_c_to_r=loss_ratio_c_to_r, sensing_loss_scale=1000,
+                            batch_size=batch_size, lr_enc=lr_seq,
+                            training_strategy=training_strategy,
+                            loss_ratio_c_to_r=loss_ratio_c_to_r,
                             auto_save=auto_save, path=path, device=device, args=args, generate_dataset=generate_dataset)
 
-t_joint = trainer.Trainer(encoder, t_conf, dec=decoder, TURBO=TURBO)
+t_joint = trainer.Trainer(encoder, t_conf, dec=decoder)
 
 if LOADMODEL:  ## To load the model if necessary.
     t_joint.load(milestone=milestone_to_load, milestone_dec=milestone_to_load_dec)
@@ -176,7 +152,6 @@ if LOADMODEL:  ## To load the model if necessary.
 print(encoder)
 save_arguments_to_file(args, filename=t_joint.config.path_state_dict+"/arguments.txt")
 _, _, _ = t_joint.train()
-
 
 
 snr_range = np.linspace(args.snr_test_start, args.snr_test_end, args.snr_points+1)
