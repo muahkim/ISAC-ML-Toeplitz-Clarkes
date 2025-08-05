@@ -27,8 +27,6 @@ TURBO = args.TURBO
 ## Training algorithm
 training_strategy = args.training_strategy
 
-#if args.f_Dn == 0:
-#    training_strategy = 'likelihood_training'
 if training_strategy == 'likelihood_training':
     loss_c = 'likelihood'
 elif training_strategy in {'iterative_training', 'joint_training'}:
@@ -47,18 +45,15 @@ device = torch.device("cuda" if use_cuda else "cpu")
 # Set the channel parameters and learning model parameters. To be moved to args file later on.
 #################################################
 
-LOADMODEL               = True           # If you want to load a model trained previously.
-milestone_to_load       = 60    # If loading a model, set the milestone to load. It is saved as epoch+1.
-milestone_to_load_dec   = 60
+milestone_to_load       = args.load_epoch    # If loading a model, set the milestone to load. It is saved as epoch+1.
+milestone_to_load_dec   = args.load_epoch
+if milestone_to_load == 0:
+    LOADMODEL = False
+else:
+    LOADMODEL = True
 training_snr        = args.snr_points # To load models trained with training_snr
-loss_ratio_c_to_r   = args.loss_ratio_c_to_r  # float in [0,1]. loss ratio between communication and sensing. 1 means training only for communication and 0 means training only for sensing.
-if LOADMODEL is False:
-    milestone_to_load = 0
-    milestone_to_load_dec = 0
-if milestone_to_load is None:
-    milestone_to_load = 1
-if milestone_to_load_dec is None:
-    milstone_to_load_dec = milestone_to_load
+loss_ratio_c_to_r   = args.loss_ratio_c_to_r  # float in [0,1]. loss ratio between communication and sensing. 1 means training only for communication and 0 means training only for sensing.if LOADMODEL is False:
+
 auto_save = True            # If True, saving the trained models.
 
 # Generating covariance based on Clakre's model
@@ -68,14 +63,14 @@ f_dopp_norm = float(f_Dn)   # Define the covariance matrix for communication cha
 T = args.T                  # Symbol period
 P = args.P                  # number of paths in sensing channel
 tau_max = args.tau_max  # maximum delay of paths. Delay follows a uniform distribution U[0, tau_max].
-if P > 1:
+if P > 1 and args.loss_ratio_c_to_r < 1:
     assert len(tau_max) == P, "The length of tau_max should be equal to P."
 
 path = 'state_dict/'        # path to save and load models.
 
 k = args.block_len * args.code_rate_k
 M = 2 ** k
-n_r = args.block_len * args.code_rate_n #+ 2
+n_r = args.block_len * args.code_rate_n
 n = n_r // 2
 rate = args.code_rate_k / args.code_rate_n  # only the channel coding part without considering modulation atm.
 
@@ -146,7 +141,7 @@ print(f"Number of paths: {P}, Random Delay~U[0, tau_max*{T:.4e}], tau_max = {tau
 
 print(f"Training Strategy: {training_strategy}\n")
 
-t_conf = trainer.TrainerConfig(M=M, k=k, n=n, n_r=n_r, rate=rate, f_dopp_norm=f_dopp_norm, #ebn0=ebn0,
+t_conf = trainer.TrainerConfig(M=M, k=k, n=n, n_r=n_r, rate=rate, f_dopp_norm=f_dopp_norm,
                                snr=training_snr,
                                 P=P, T=T, tau_max=tau_max, epoch_loaded = milestone_to_load-1,
                                 epoch_loaded_dec = milestone_to_load_dec,
@@ -158,8 +153,13 @@ t_conf = trainer.TrainerConfig(M=M, k=k, n=n, n_r=n_r, rate=rate, f_dopp_norm=f_
 
 t_joint = trainer.Trainer(encoder, t_conf, dec=decoder, TURBO=TURBO)
 
+
 if LOADMODEL:  ## To load the model if necessary.
-    t_joint.load(milestone=milestone_to_load, milestone_dec=milestone_to_load_dec)
+    if args.loss_ratio_c_to_r > 0:
+        t_joint.load(milestone=milestone_to_load, milestone_dec=milestone_to_load_dec)
+    else:
+        t_joint.load(milestone=milestone_to_load, encoder_only=True)
+
 
 print(encoder)
 save_arguments_to_file(args, filename=t_joint.config.path_state_dict+"/arguments.txt")
@@ -181,7 +181,7 @@ for snr in snr_range:
 
     BER_list.append(BER); FER_list.append(FER); LB_list.append(LB_mean); LB_worst_list.append(LB_worst); LB_best_list.append(LB_best)
 
-with open(f'test_results/{t_conf.file_tag}.txt', 'w') as f:
+with open(f'test_results/{t_conf.file_tag}_{t_conf.timestamp}.txt', 'w') as f:
     f.write('SNR\t')
     f.write(','.join(f"{snr:.2f}" for snr in snr_range))
     f.write('\nBER\t')

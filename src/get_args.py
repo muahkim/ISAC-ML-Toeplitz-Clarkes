@@ -73,7 +73,7 @@ def get_args():
                         default = 'toeplitz')
 
     # Modulation Type (Testing classical approach)
-    parser.add_argument('-mod_type', choices=['PSK', 'DPSK', 'ASK'], default='PSK')
+    parser.add_argument('-mod_type', choices=['PSK', 'DPSK', 'ASK', 'ZC'], default='PSK')
 
     # Channel parameters
     parser.add_argument('-vv',type=float, default=5, help ='only for t distribution channel')
@@ -102,6 +102,7 @@ def get_args():
     ################################################################
     # TurboAE encoder/decoder parameters
     ################################################################
+    parser.add_argument('-load_epoch', type=int, default=0)
     parser.add_argument('-enc_rnn', choices=['gru', 'lstm', 'rnn', 'mingru'], default='gru')
     parser.add_argument('-dec_rnn', choices=['gru', 'lstm', 'rnn', 'mingru'], default='gru')
 

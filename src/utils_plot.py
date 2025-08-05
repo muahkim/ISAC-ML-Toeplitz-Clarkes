@@ -7,29 +7,27 @@ import math
 assert sys.version_info >= (3, 5)
 
 import matplotlib as mpl
-#mpl.use('TkAgg')
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 
 plt.ion()
 import matplotlib.cm as cm
 from scipy.ndimage.filters import gaussian_filter
 
-from sklearn.manifold import TSNE
-from matplotlib.lines import Line2D
 
-
+sys.path.append('src')
 from channel_models import *
 
-mpl.rcParams.update(mpl.rcParamsDefault)
-mpl.rcParams['pdf.fonttype'] = 42
-mpl.rcParams['ps.fonttype'] = 42
-mpl.rcParams['font.family'] = "serif"
-mpl.rcParams['mathtext.fontset'] = "dejavuserif"
-mpl.rc('axes', labelsize=14)
-mpl.rc('xtick', labelsize=14)
-mpl.rc('ytick', labelsize=14)
-np.random.seed(42)
-
+def set_the_font():
+    mpl.rcParams.update(mpl.rcParamsDefault)
+    mpl.rcParams['pdf.fonttype'] = 42
+    mpl.rcParams['ps.fonttype'] = 42
+    mpl.rcParams['font.family'] = "serif"
+    mpl.rcParams['mathtext.fontset'] = "dejavuserif"
+    mpl.rc('axes', labelsize=14, titlesize=14)
+    mpl.rc('xtick', labelsize=14)
+    mpl.rc('ytick', labelsize=14)
+    np.random.seed(42)
 
 def myplot(x1, x2, s, max_amp, bins=1000):
     # This is a filter to draw a heatmap.        
@@ -45,8 +43,9 @@ def batch_int_to_binary_vector(numbers, num_bits=8):
     binary_matrix = ((numbers.clone().detach().unsqueeze(-1) >> torch.arange(num_bits - 1, -1, -1)) & 1).float()
     return binary_matrix
 
-def line_plots_Enc(enc, M, args=None, path=None, title=None, max_amp=None, size=10, PLOT_FIGURE=False):
+def line_plots_Enc(enc, M, args=None, path=None, title=None, max_amp=None, size=10, PLOT_FIGURE=False, mode="magnitude", magnitude_mode="mean"):
     device = next(enc.parameters()).device
+    set_the_font()
 
     labels = torch.arange(0, M, dtype=int)
     if args.TURBO:
@@ -64,31 +63,73 @@ def line_plots_Enc(enc, M, args=None, path=None, title=None, max_amp=None, size=
     x = x.view(M, -1, 2).numpy()  # each sample is a n x 2 tensor.
     n = x.shape[1]
 
-    fig = plt.figure(figsize=(10, 8))
-    plt.subplot(1, 4, 1)
-    for m in range(M):
-        plt.subplot(4, 1, 1)
-        plt.plot(np.arange(1, n + 1), x[m, :, 0])
-        plt.subplot(4, 1, 2)
-        plt.plot(np.arange(1, n + 1), x[m, :, 1])
-        plt.subplot(4, 1, 3)
-        plt.plot(np.arange(1, n + 1), np.sum(x[m] ** 2, axis=1) ** 0.5)
-        plt.subplot(4, 1, 4)
-        plt.plot(np.arange(1, n + 1), np.arctan(x[m, :, 1] / x[m, :, 0]))
+    if mode == "full":
+        fig = plt.figure(figsize=(10, 8))
+        _, ax = plt.subplot(1, 4, 1)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        for m in range(M):
+            plt.subplot(4, 1, 1)
+            plt.plot(np.arange(1, n + 1), x[m, :, 0])
+            plt.subplot(4, 1, 2)
+            plt.plot(np.arange(1, n + 1), x[m, :, 1])
+            plt.subplot(4, 1, 3)
+            plt.plot(np.arange(1, n + 1), np.sum(x[m] ** 2, axis=1) ** 0.5)
+            plt.subplot(4, 1, 4)
+            plt.plot(np.arange(1, n + 1), np.arctan(x[m, :, 1]/ x[m, :, 0]))
 
-    plt.subplot(4, 1, 1)
-    plt.title("Real")
-    plt.xlabel("Symbol Index")
-    plt.subplot(4, 1, 2)
-    plt.title("Imag")
-    plt.xlabel("Symbol Index")
-    plt.subplot(4, 1, 3)
-    plt.title("Magnitude")
-    plt.xlabel("Symbol Index")
-    plt.subplot(4, 1, 4)
-    plt.title("Phase")
-    plt.xlabel("Symbol Index")
-    plt.legend()
+        plt.subplot(4, 1, 1)
+        plt.title("Real part")
+        plt.xlabel("Symbol Index", loc='right')
+        plt.subplot(4, 1, 2)
+        plt.title("Imaginary part")
+        plt.xlabel("Symbol Index", loc='right')
+        plt.subplot(4, 1, 3)
+        plt.title("Magnitude")
+        plt.xlabel("Symbol Index", loc='right')
+        plt.subplot(4, 1, 4)
+        plt.title("Phase")
+        plt.xlabel("Symbol Index", loc='right')
+        plt.ylabel("radian")
+
+    elif mode == "polar":
+        fig = plt.figure(figsize=(10, 4))
+        _, ax = plt.subplot(1, 2, 1)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        for m in range(M):
+            if magnitude_mode in {"all", "both"}:
+                plt.subplot(2, 1, 1)
+                plt.plot(np.arange(1, n + 1), np.sum(x[m] ** 2, axis=1) ** 0.5)
+            plt.subplot(2, 1, 2)
+            plt.plot(np.arange(1, n + 1), np.arctan(x[m, :, 1] / x[m, :, 0]))
+        if magnitude_mode in {"both", "mean"}:
+            mean = np.mean( np.sum(x ** 2, axis=2) ** 0.5, axis=0 )
+            std = np.std( np.sum(x ** 2, axis=2) ** 0.5, axis=0 )
+            plt.subplot(2, 1, 1)
+            plt.plot(np.arange(1, n + 1), mean, marker='o', label="Mean")
+            plt.fill_between(np.arange(1, n + 1), mean - std, mean + std, alpha=0.3, label='±1 Std Dev')
+        plt.subplot(2, 1, 1)
+        plt.title("Magnitude")
+        plt.xlabel("Symbol Index", loc='right')
+        plt.subplot(2, 1, 2)
+        plt.title("Phase")
+        plt.xlabel("Symbol Index", loc='right')
+        plt.ylabel("radian")
+
+    elif mode == "magnitude":
+        fig = plt.figure(figsize=(10, 2))
+        plt.gca().xaxis.set_major_locator(MaxNLocator(integer=True))
+        for m in range(M):
+            if magnitude_mode in {"all", "both"}:
+                plt.plot(np.arange(1, n + 1), np.sum(x[m] ** 2, axis=1) ** 0.5)
+
+        if magnitude_mode in {"both", "mean"}:
+            mean = np.mean(np.sum(x ** 2, axis=2) ** 0.5, axis=0)
+            std = np.std(np.sum(x ** 2, axis=2) ** 0.5, axis=0)
+            plt.plot(np.arange(1, n + 1), mean, marker='o', label="Mean")
+            plt.fill_between(np.arange(1, n + 1), mean - std, mean + std, alpha=0.3, label='±1 Std Dev')
+        plt.ylim([0, 2])
+        plt.ylabel("Magnitude")
+        plt.xlabel("Symbol Index", loc='right')
 
     plt.tight_layout()
     if path is not None:
@@ -99,7 +140,7 @@ def line_plots_Enc(enc, M, args=None, path=None, title=None, max_amp=None, size=
 
 def Constellation_Enc(enc, M, args=None, path=None, title=None, max_amp=None, size=10, PLOT_FIGURE=False):
     device = next(enc.parameters()).device
-
+    set_the_font()
     labels = torch.arange(0, M, dtype=int)
     if args.TURBO:
         labels = batch_int_to_binary_vector(labels, num_bits=math.log2(M))
@@ -145,6 +186,7 @@ def Constellation_Enc(enc, M, args=None, path=None, title=None, max_amp=None, si
             axes[i].set_title(r'$x_{' + str(i + 1) + '}$', fontsize=14)  # ("#"+ str(i+1))
             axes[i].set_xlim([-max_re, max_re])
             axes[i].set_ylim([-max_im, max_im])
+            axes[i].grid(True)
 
     fig.tight_layout()
     if title is not None:
@@ -267,8 +309,7 @@ def Constellation_Enc_m(enc, M, m=0, path=None, title=None, max_amp=None):
 def Constellation_Enc_all(enc, M, args=None, s=10,  path=None, title=None, max_amp=None,
                           colormap=cm.coolwarm, is_heatmap=True, bins=200, PLOT_FIGURE=False):
     # Show the constellation of the learned encoder by a heat map across over n dimensions.
-    mpl.rcParams.update(mpl.rcParamsDefault)
-
+    set_the_font()
     device = next(enc.parameters()).device
 
     labels = torch.arange(0, M, dtype=int)
@@ -372,66 +413,40 @@ def Constellation_Enc_all_m(enc, M, is_heatmap=True, m=0, s=10, path=None, title
     return
 
 
-def Constellation_InOut(enc, M, cov, noise_std, dev, num_samples=500, bs=100, path=None):
-    # Show the constellation of the learned channel output with a comparison to the channel model's outputs.
-    mpl.rcParams.update(mpl.rcParamsDefault)
-    colors = 100 // M * np.arange(M) / 100 + 0.07  # np.arange(1, 100, 100//M, dtype=int)[:M]
-    cmap = plt.cm.get_cmap('gist_ncar')
-    colors_rgba = cmap(colors) * 0.8
-    # Arrays for plotting
-    labels = torch.arange(0, M, dtype=int)
-    m = F.one_hot(labels, num_classes=M)
-    m = m.float().reshape(-1, M)
-    x = enc(m)  # codeword 2n-dimensional real, n-dimensional complex
-    n = x.shape[1] // 2
+def plot_loss_over_epochs(loss_lists, num_epochs, save_path='loss_plot.png', LOADMODEL=False):
+    set_the_font()
+    """
+    Plots multiple loss curves and saves the figure.
 
-    x_r = x.repeat(num_samples, 1)
-    x_r = x_r.view(-1, n, 2)
-    x_c = torch.view_as_complex(x_r)
+    Parameters:
+    - loss_lists: list of lists, each containing loss values (length must equal num_epochs)
+    - num_epochs: int, number of epochs (length of each loss list)
+    - save_path: str, path to save the plot as .png
+    """
+    
+    styles = ['-', '--', '-.']  # Different line+marker styles
+    labels = ['$\ell_c$', '$\ell_s$', '$\ell_j$']#[f"Loss {i + 1}" for i in range(len(loss_lists))]
 
-    y = torch.empty(num_samples * M, n, dtype=torch.cfloat).to(dev)
-    h_c = torch.empty(num_samples * M, n, dtype=torch.cfloat).to(dev)
-    x_c_batched = torch.split(x_c, bs)
-    for count, x_c_b in enumerate(x_c_batched):
-        y[count * bs: (count + 1) * bs, :], h_c[count * bs: (count + 1) * bs, :] = ch_corr_Rayleigh_by_cov(x_c_b, cov,
-                                                                                                           noise_std,
-                                                                                                           dev)
-    # move tensors to cpu and convert to numpy array for plotting.
-
-    y = torch.view_as_real(y)
-    max_re = torch.sqrt(torch.max(y[:, :, 0] ** 2)).item()
-    max_im = torch.sqrt(torch.max(y[:, :, 1] ** 2)).item()
-
-    y = y.detach().cpu().numpy()
-    x = x_r.detach().cpu().numpy()
-
-    print("Constellation of channel output", flush=True)
-    if n == 1:
-        for j in range(M):
-            fig = plt.figure(figsize=(4, 4))
-            plt.scatter(y[num_samples * j: num_samples * (j + 1), 0],
-                        y[num_samples * j: num_samples * (j + 1), 1], marker='x', s=1)
-            plt.scatter(x_r[j, 0], x_r[j, 1], color=colors_rgba[j], marker='o')
-            plt.xlim([-max_re, max_re])
-            plt.ylim([-max_im, max_im])
-            plt.xlabel('$Re(x)$')
-            plt.ylabel('$Im(x)$')
+    plt.figure(figsize=(6, 2.5))
+    
+    if not all(len(loss) == num_epochs for loss in loss_lists):
+    	loss_len = len(loss_lists[0])
+    	epoch_range = list(range(num_epochs - loss_len + 1, num_epochs + 1))
     else:
-        for j in range(M):
-            fig, axes = plt.subplots(1, n, figsize=(n * 3, 3))
-            for i in range(n):
-                # for j in range(M):
-                axes[i].scatter(y[num_samples * j: num_samples * (j + 1), i, 0],
-                                y[num_samples * j: num_samples * (j + 1), i, 1], marker='x', s=1)
-                axes[i].scatter(x[j, i, 0], x[j, i, 1], marker='o')
-                axes[i].set_xlabel('$Re(x_' + str(i + 1) + ')$')
-                axes[i].set_ylabel('$Im(x_' + str(i + 1) + ')$')
-                axes[i].set_title("channel #" + str(i + 1) + " message #" + str(j + 1))
+        epoch_range = list(range(1, num_epochs +1))
 
-                axes[i].set_xlim([-max_re, max_re])
-                axes[i].set_ylim([-max_im, max_im])
-            if path is not None:
-                fig.savefig(path + '_' + str(j + 1) + '.pdf', bbox_inches='tight')
-    plt.show()
+    for i, (loss, style, label) in enumerate(zip(loss_lists, styles, labels)):
+        plt.semilogy(epoch_range, loss, style, label=label)
+
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    #plt.title("Training Loss over Epochs")
+    plt.legend(ncol=3)
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+
+    print(f"Plot saved to {save_path}")
 
     return

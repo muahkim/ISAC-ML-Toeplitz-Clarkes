@@ -7,7 +7,7 @@ from numpy.random import mtrand
 sys.path.append('src')
 import src.trainer as trainer
 import src.models as models
-from src.utils import save_arguments_to_file
+from src.utils import save_arguments_to_file, SNR_to_noise
 from src.utils_plot import *
 from src.encoders import import_enc
 from src.decoders import import_dec
@@ -52,9 +52,13 @@ device = torch.device("cuda" if use_cuda else "cpu")
 #################################################
 loss_ratio_c_to_r = args.loss_ratio_c_to_r  # float in [0,1]. loss ratio between communication and sensing. 1 means training only for communication and 0 means training only for sensing.
 
-LOADMODEL               = False     # If you want to load a model trained previously.
-milestone_to_load       = 0    # If loading a model, set the milestone to load. It is saved as epoch+1.
-milestone_to_load_dec   = 0
+#LOADMODEL               = False     # If you want to load a model trained previously.
+milestone_to_load       = args.load_epoch    # If loading a model, set the milestone to load. It is saved as epoch+1.
+milestone_to_load_dec   = args.load_epoch
+if args.load_epoch > 0:
+    LOADMODEL = True
+else:
+    LOADMODEL = False
 
 if LOADMODEL is False:
     milestone_to_load = 0
@@ -75,8 +79,8 @@ tau_max = args.tau_max  # maximum delay of paths. Delay follows a uniform distri
 if P > 1:
     assert len(tau_max) == P, "The length of tau_max should be equal to P."
 
-lr_seq = [1e-3, 1e-4, 1e-5] # list of learning rates for training.
-ep_seq = [10, 20, 30]#, 20]#, 10]       # list of number of epochs for each learning rate.
+lr_seq = [1e-4, 1e-5] # list of learning rates for training.
+ep_seq = [50, 100]#, 20]#, 10]       # list of number of epochs for each learning rate.
 assert len(lr_seq) == len(ep_seq), "the length of lr_seq and ep_seq should be the same."
 
 path = 'state_dict/'        # path to save and load models.
@@ -157,12 +161,12 @@ print(f"Training Strategy: {training_strategy}\n")
 
 t_conf = trainer.TrainerConfig(M=M, k=k, n=n, n_r=n_r, rate=rate, f_dopp_norm=f_dopp_norm,
                             P=P, T=T, tau_max=tau_max, epoch_loaded = milestone_to_load-1,
-                            epoch_loaded_dec = milestone_to_load_dec,
+                            epoch_loaded_dec = milestone_to_load_dec, LOADMODEL=LOADMODEL,
                             max_epochs=ep_seq, dataset_size=dataset_size,
                             batch_size=batch_size, lr_enc=lr_seq, binary=binary,
                             training_strategy=training_strategy, loss_c = loss_c, loss_r = loss_r,
-                            loss_ratio_c_to_r=loss_ratio_c_to_r, auto_save=auto_save,
-                            path=path, device=device, args=args, generate_dataset=generate_dataset)
+                            loss_ratio_c_to_r=loss_ratio_c_to_r, sensing_loss_scale=1000,
+                            auto_save=auto_save, path=path, device=device, args=args, generate_dataset=generate_dataset)
 
 t_joint = trainer.Trainer(encoder, t_conf, dec=decoder, TURBO=TURBO)
 
@@ -171,5 +175,36 @@ if LOADMODEL:  ## To load the model if necessary.
 
 print(encoder)
 save_arguments_to_file(args, filename=t_joint.config.path_state_dict+"/arguments.txt")
-_, _ = t_joint.train()
+_, _, _ = t_joint.train()
 
+
+
+snr_range = np.linspace(args.snr_test_start, args.snr_test_end, args.snr_points+1)
+
+BER_list = []
+FER_list = []
+LB_list = []; LB_worst_list = []; LB_best_list = []
+for snr in snr_range:
+    noise_std    = SNR_to_noise(snr)
+    BER, FER, LB_P = t_joint.test(noise_std=noise_std)
+    LB_P_np = np.array(LB_P)
+    LB_mean_P = np.mean(LB_P_np, axis=0)
+    LB_worst = np.max(LB_mean_P)
+    LB_best  = np.min(LB_mean_P)
+    LB_mean = np.mean(LB_mean_P)
+
+    BER_list.append(BER); FER_list.append(FER); LB_list.append(LB_mean); LB_worst_list.append(LB_worst); LB_best_list.append(LB_best)
+
+with open(f'test_results/{t_conf.file_tag}_{t_conf.timestamp}.txt', 'w') as f:
+    f.write('SNR\t')
+    f.write(','.join(f"{snr:.2f}" for snr in snr_range))
+    f.write('\nBER\t')
+    f.write(','.join(f"{num:.4e}" for num in BER_list))
+    f.write('\nFER\t')
+    f.write(','.join(f"{num:.4e}" for num in FER_list))
+    f.write(f'\n{args.loss_r}\t')
+    f.write(','.join(f"{num:.4e}" for num in LB_list))
+    f.write(f'\nWorst path {args.loss_r}\t')
+    f.write(','.join(f"{num:.4e}" for num in LB_worst_list))
+    f.write(f'\nBest path {args.loss_r}\t')
+    f.write(','.join(f"{num:.4e}" for num in LB_best_list))

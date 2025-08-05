@@ -32,6 +32,9 @@ def customized_loss(output, X_train, args, size_average = True, noise = None, co
     if args.loss == 'bce':
         output = torch.clamp(output, 0.0, 1.0)
         if size_average == True:
+            has_inf = torch.isinf(output).any()
+            if has_inf.item():
+                print(output)
             loss = F.binary_cross_entropy(output, X_train)
         else:
             return [F.binary_cross_entropy(item1, item2) for item1, item2 in zip(output, X_train)]

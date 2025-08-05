@@ -1,6 +1,7 @@
 import numpy as np
 import sys
 import scipy
+import math
 
 assert sys.version_info >= (3, 5)
 np.random.seed(42)
@@ -13,10 +14,8 @@ from channel_models import *
 import commpy.channelcoding.convcode as cc
 import commpy.modulation as modulation
 
-def cc_encoder(input_bits, code_rate=3):
+def cc_encoder(input_bits, code_rate=3, termination='term'):
     # Memory elements per input bit (K-1)
-
-
     if code_rate == 1.5:
         memory = np.array([2, 2])
         # Define Rate 2/3 Convolutional Code with Constraint Length K=3
@@ -37,21 +36,21 @@ def cc_encoder(input_bits, code_rate=3):
     trellis = cc.Trellis(memory, g_matrix)
 
     # Encode using Convolutional Encoder
-    encoded_bits = cc.conv_encode(input_bits, trellis, termination='cont')
+    encoded_bits = cc.conv_encode(input_bits, trellis, termination=termination)
+
     rate = g_matrix.shape[0] / g_matrix.shape[1]
 
     return encoded_bits, trellis
 
-def random_interleaver(data, seed=None):
-    rng = np.random.default_rng(seed)
-    perm = rng.permutation(len(data))
-    interleaved = data[perm]
-    return interleaved, perm
 
-def random_deinterleaver(data, perm):
-    deinterleaved = np.empty_like(data)
-    deinterleaved[perm] = data  # Reverse the permutation
-    return deinterleaved
+def fixed_permutation_interleave(bits, perm):
+    return bits[perm]
+
+
+def fixed_permutation_deinterleave(bits, perm):
+    inv = np.argsort(perm)
+    return bits[inv]
+
 
 def differential_encode(modulated_symbols, n, prev_symbol = 1 + 0j):
     """Differentially encodes a sequence of already PSK-modulated symbols."""
@@ -70,6 +69,7 @@ def differential_encode(modulated_symbols, n, prev_symbol = 1 + 0j):
             prev_symbol_block = encoded_symbols[idx, i+1]  # Update for next iteration
 
     return encoded_symbols
+
 
 def differential_decode_mpsk(received_symb, M, n, modulation_table):
     """Differentially decodes a sequence of M-PSK demodulated symbols."""
@@ -207,6 +207,7 @@ def modulator(bit_seq, M_mod, mod_type):
 
     return modulated_symb
 
+
 def demodulator(received_seq, M_mod, mod_type, noise_std=None):
     ## Define demodulator
     if mod_type in {'PSK', 'DPSK'} :
@@ -220,7 +221,8 @@ def demodulator(received_seq, M_mod, mod_type, noise_std=None):
 
     return modem.demodulate(received_seq, 'hard')
 
-def test_ER_CC_Mod_batched(n, M_mod, channel_model, snr_range, k, code_rate=3, num_samples=10 ** 8, batch_size=10 ** 3, mod_type='PSK'):
+
+def test_ER_CC_Mod_batched(n, M_mod, channel_model, snr_range, k, code_rate=3, num_samples=10 ** 8, batch_size=10 ** 4, mod_type='PSK', uncoded=False):
     num_batches = num_samples // batch_size
     BER_per_SNR = []
 
@@ -235,14 +237,20 @@ def test_ER_CC_Mod_batched(n, M_mod, channel_model, snr_range, k, code_rate=3, n
 
         noise_std = utils.SNR_to_noise(snr)
         BER_list = []
-        #pbar = tqdm(range(num_batches), desc="Batches", miniters=num_batches//5)
         for it in range(num_batches):
-            BER_batch = test_ER_CC_Mod(n, M_mod, channel_model, noise_std, k, code_rate=code_rate, num_samples=batch_size, mod_type=mod_type, modulation_table=modulation_table)
+            if uncoded:
+                BER_batch = test_ER_Mod(n, M_mod, channel_model, noise_std, k, num_samples=batch_size, mod_type=mod_type, modulation_table=modulation_table)
+            else:
+                BER_batch = test_ER_CC_Mod(n, M_mod, channel_model, noise_std, k, code_rate=code_rate,
+                                       num_samples=batch_size, mod_type=mod_type, modulation_table=modulation_table)
+
             BER_list.append(BER_batch)
+            BER_array = np.array(BER_list)
 
             if (it+1) % (num_batches//100) == 0:
-                BER_array = np.array(BER_list)
                 print(f"Iteration {it} BER {np.mean(BER_array, axis=0):.4e}")
+            if (it+1) * batch_size * np.mean(BER_array, axis=0) > 10000 :
+                break
 
         BER_array = np.array(BER_list)
         BER_per_SNR.append(np.mean(BER_array, axis=0))
@@ -252,18 +260,169 @@ def test_ER_CC_Mod_batched(n, M_mod, channel_model, snr_range, k, code_rate=3, n
 
     return BER_per_SNR
 
-def test_ER_CC_Mod(n, M_mod, channel_model, noise_std, k, code_rate=3, num_samples=10 ** 5, mod_type='PSK', modulation_table=None, interleaving=False):
+
+def test_ER_CC_Mod(n, M_mod, channel_model, noise_std, k, code_rate=3, num_samples=10 ** 6, mod_type='PSK', modulation_table=None, interleaving=False, termination='term'):
     # Generate a random input sequence
-    np.random.seed(42)
-    num_message_bits = int(num_samples // k * k) # make it multiple of the block length,
+    np.random.seed(43)
+    rng = np.random.default_rng(43)
+
+    k_threshold = 24
+    if k < k_threshold:
+        message_length = k_threshold
+        code_length = int(k_threshold * code_rate)
+    else:
+        message_length = k
+        code_length = n
+
+    if interleaving:
+        perm = rng.permutation(message_length)
+
+    num_message_bits = int(num_samples // message_length * message_length) # make it multiple of the block length,
 
     message_bits = np.random.randint(0, 2, num_message_bits)
-    encoded_bits, trellis = cc_encoder(message_bits, code_rate=code_rate)
 
+    # Create a trellis diagram for encoding and decoding
+    _, trellis = cc_encoder(message_bits.copy(), code_rate=code_rate)
+
+    # encode chunk-wise
+    encoded_bits_all = []
+
+    num_chunks = len(message_bits) // message_length
+
+    for i in range(num_chunks):
+        start = i * message_length
+        end = start + message_length
+        chunk = message_bits[start:end]
+        if interleaving:
+            assert chunk.shape[0] == message_length
+            chunk = fixed_permutation_interleave(chunk.copy(), perm)
+
+        encoded_chunk, _ = cc_encoder(chunk.copy(), code_rate=code_rate, termination=termination)
+        encoded_bits_all.append(encoded_chunk)
+    code_length = chunk.shape[0]
+
+    encoded_bits = np.concatenate(encoded_bits_all)
+
+    code_length = encoded_chunk.shape[0]
+
+    # pad zeros to match the shape to be multiple of the block lengths
+    encoded_len = encoded_bits.shape[0]
+    padded_len = (encoded_len // n + 1) * n
+    pad_length = padded_len - encoded_len
+
+    encoded_bits = np.concatenate([encoded_bits, np.zeros((pad_length,), dtype=int)])
+
+    # Modulation
     modulated_symb = modulator(encoded_bits, M_mod, mod_type)
     modulated_symb = zero_small_parts(modulated_symb)
+    if mod_type == 'DPSK':
+        modulated_symb = differential_encode(modulated_symb, n + 1)
+    else:
+        modulated_symb = np.reshape(modulated_symb, (-1, n))
+    modulated_symb_torch = torch.from_numpy(modulated_symb)
 
-    truncated_len = (modulated_symb.shape[0] // n) * n
+    # Channel
+    received_symb, h = channel_model(modulated_symb_torch, noise_std=noise_std)
+    received_symb_scale_back = received_symb.cpu().numpy() #/ sqrt(n) * np.reshape(sigma, (-1,1))
+    received_symb_scale_back = np.reshape(received_symb_scale_back, (-1,))
+
+    # Demodulation
+    if mod_type == 'DPSK':
+        demodulated_bits = differential_decode_mpsk(received_symb_scale_back, M_mod, n + 1, modulation_table)
+    else:
+        demodulated_bits = demodulator(received_symb_scale_back, M_mod, mod_type, noise_std=noise_std)
+    demodulated_bits = np.reshape(demodulated_bits, (-1,))
+    demodulated_bits = demodulated_bits[:encoded_len] # Cut out the zero paddings.
+
+    # Decoding
+    decoded_bits_all = []
+    #Decoding per each chunk
+    num_chunks = len(demodulated_bits) // code_length
+    for i in range(num_chunks):
+        start = i * code_length
+        end = start + code_length
+        chunk = demodulated_bits[start:end]
+        # Viterbi decoding
+        decoded_chunk = cc.viterbi_decode(chunk.copy(), trellis, tb_depth=15)
+        decoded_chunk = decoded_chunk[:message_length]
+        if interleaving:
+            assert decoded_chunk.shape[0] == message_length
+            decoded_chunk = fixed_permutation_deinterleave(decoded_chunk.copy(), perm)
+        decoded_bits_all.append(decoded_chunk)
+    # Combining all the chunks
+    decoded_bits = np.concatenate(decoded_bits_all)
+
+    decoded_bits = np.reshape( decoded_bits, (-1,))
+    message_bits = np.reshape( message_bits, (-1,))
+    demodulated_bits = np.reshape(demodulated_bits, (-1,))
+
+    try:
+        ne = np.not_equal(decoded_bits[:], message_bits[:decoded_bits.shape[0]])
+    except:
+        ne = np.not_equal(decoded_bits[:message_bits.shape[0]], message_bits[:])
+    ne1 = np.not_equal(demodulated_bits, encoded_bits[:demodulated_bits.shape[0]])
+
+    BER_tmp = np.mean(ne.astype(float))
+
+    '''
+    ### To test the CC
+    decoded_bits_CC = cc.viterbi_decode(encoded_bits.copy(), trellis)
+    ne = np.not_equal(decoded_bits_CC[:message_bits.shape[0]], message_bits)
+    BER_only_CC = np.mean(ne.astype(float))
+    print(f"BER only encoding and decoding of CC: {BER_only_CC:.3e}")
+    
+    
+    decoded_bits_all_CC = []
+
+    # chunk-wise encoding and decoding
+    num_chunks = len(encoded_bits) // code_length
+
+    for i in range(num_chunks):
+        start = i * code_length
+        end = start + code_length
+        chunk = encoded_bits[start:end]
+
+        # Viterbi decoding
+        decoded_chunk = cc.viterbi_decode(chunk.copy(), trellis, tb_depth=15)
+        if interleaving:
+            decoded_chunk = fixed_permutation_deinterleave(decoded_chunk.copy(), perm)
+        decoded_bits_all_CC.append(decoded_chunk[:message_length])
+
+    # combine the chunks into a stream
+    decoded_bits_CC = np.concatenate(decoded_bits_all_CC)
+    ne = np.not_equal(decoded_bits_CC, message_bits[:decoded_bits.shape[0]])
+    BER_only_CC = np.mean(ne.astype(float))
+    print(f"BER only encoding and decoding of CC: {BER_only_CC:.3e}")
+        
+    ### To test modulation
+    modulated_symb_torch_test = modulated_symb_torch.view(-1,)
+    if mod_type == 'DPSK':
+        demodulated_bits_test = differential_decode_mpsk(modulated_symb_torch_test.cpu().numpy(), M_mod, n+1, modulation_table)
+    else:
+        demodulated_bits_test = demodulator(modulated_symb_torch_test.cpu().numpy(), M_mod, mod_type, noise_std=noise_std)
+    demodulated_bits_test = np.reshape(demodulated_bits_test, (-1,))
+    ne_mod = np.not_equal(demodulated_bits_test, encoded_bits[:demodulated_bits_test.shape[0]])
+    BER_mod = np.mean(ne_mod.astype(float))
+    print(f"BER from modulation without channel: {BER_mod:.3e}." )
+    '''
+
+    return BER_tmp
+
+
+def test_ER_Mod(n, M_mod, channel_model, noise_std, k, num_samples=10 ** 6, mod_type='PSK',
+                   modulation_table=None):
+    # Generate a random input sequence
+    np.random.seed(42)
+
+    message_bits = np.random.randint(0, 2, num_samples)
+
+    modulated_symb = modulator(message_bits, M_mod, mod_type)
+    modulated_symb = zero_small_parts(modulated_symb)
+
+    if mod_type == 'DPSK':
+        truncated_len = (modulated_symb.shape[0] // (n - 1)) * (n - 1)
+    else:
+        truncated_len = (modulated_symb.shape[0] // n) * n
     modulated_symb = modulated_symb[:truncated_len]
 
     if mod_type == 'DPSK':
@@ -271,13 +430,10 @@ def test_ER_CC_Mod(n, M_mod, channel_model, noise_std, k, code_rate=3, num_sampl
     else:
         modulated_symb = np.reshape(modulated_symb, (-1, n))
 
-    #sigma = np.sum(modulated_symb * modulated_symb.conj(), axis=1) ** 0.5 # magnitude of each block
-    #modulated_symb_power_norm = modulated_symb / np.reshape(sigma, (-1,1)) * sqrt(n)
-    #modulated_symb_torch = torch.from_numpy(modulated_symb_power_norm)
     modulated_symb_torch = torch.from_numpy(modulated_symb)
 
     received_symb, h = channel_model(modulated_symb_torch, noise_std=noise_std)
-    received_symb_scale_back = received_symb.cpu().numpy() #/ sqrt(n) * np.reshape(sigma, (-1,1))
+    received_symb_scale_back = received_symb.cpu().numpy()  # / sqrt(n) * np.reshape(sigma, (-1,1))
     received_symb_scale_back = np.reshape(received_symb_scale_back, (-1,))
 
     if mod_type == 'DPSK':
@@ -286,23 +442,14 @@ def test_ER_CC_Mod(n, M_mod, channel_model, noise_std, k, code_rate=3, num_sampl
         demodulated_bits = demodulator(received_symb_scale_back, M_mod, mod_type, noise_std=noise_std)
     demodulated_bits = np.reshape(demodulated_bits, (-1,))
 
-    decoded_bits = cc.viterbi_decode(demodulated_bits, trellis)
-    decoded_bits = np.reshape( decoded_bits, (-1,))
-    message_bits = np.reshape( message_bits, (-1,))
-    demodulated_bits = np.reshape(decoded_bits, (-1,))
+    message_bits = np.reshape(message_bits, (-1,))
+    demodulated_bits = np.reshape(demodulated_bits, (-1,))
 
-    ne = np.not_equal(decoded_bits[:], message_bits[:decoded_bits.shape[0]])
-    ne1 = np.not_equal(demodulated_bits, encoded_bits[:demodulated_bits.shape[0]])
+    ne = np.not_equal(demodulated_bits, message_bits[:demodulated_bits.shape[0]])
 
     BER_tmp = np.mean(ne.astype(float))
-    '''
-    ### To test the CC
-    decoded_bits_CC = cc.viterbi_decode(encoded_bits, trellis)
-    ne = np.not_equal(decoded_bits_CC[:message_bits.shape[0]], message_bits)
-    BER_only_CC = np.mean(ne.astype(float))
-    print(f"BER only encoding and decoding of CC: {BER_only_CC:.3e}")
-    ###
 
+    '''
     ### To test modulation
     modulated_symb_torch_test = modulated_symb_torch.view(-1,)
     if mod_type == 'DPSK':
@@ -312,10 +459,11 @@ def test_ER_CC_Mod(n, M_mod, channel_model, noise_std, k, code_rate=3, num_sampl
     demodulated_bits_test = np.reshape(demodulated_bits_test, (-1,))
     ne_mod = np.not_equal(demodulated_bits_test, encoded_bits[:demodulated_bits_test.shape[0]])
     BER_mod = np.mean(ne_mod.astype(float))
-    print(f"BER from modulation without channel: {BER_mod}." )
+    print(f"BER from modulation without channel: {BER_mod:.3e}." )
     '''
 
     return BER_tmp
+
 
 def Rayleigh_covariance_generator(N, f_dopp_norm, dtype_cov=torch.cfloat):
     # parameter scaling
@@ -329,14 +477,31 @@ def Rayleigh_covariance_generator(N, f_dopp_norm, dtype_cov=torch.cfloat):
         for j in range(N):
             cov[i,j] = scipy.special.j0(arg * abs(j-i))
             if i is not j:
-                cov[i,j] = cov[i,j] #- 2**(-10)
-
-
-    #cov += 1e-6 * torch.eye(N, dtype=dtype_cov)
-
-    #cov = (cov + cov.T.conj()) / 2  # Ensure Hermitian symmetry
+                cov[i,j] = cov[i,j]
 
     return cov
 
 
+
+def zadoff_chu_seq(u, N_zc):
+    """
+    Generate a Zadoff-Chu sequence.
+
+    Parameters:
+        u     : root index (must be relatively prime to N_zc)
+        N_zc  : sequence length (typically a prime number)
+
+    Returns:
+        zc_seq : complex Zadoff-Chu sequence of length N_zc
+    """
+    if np.gcd(u, N_zc) != 1:
+        raise ValueError("u must be relatively prime to N_zc")
+
+    n = np.arange(N_zc)
+    if N_zc % 2 == 0:
+        zc_seq = np.exp(-1j * np.pi * u * n ** 2 / N_zc)
+    else:
+        zc_seq = np.exp(-1j * np.pi * u * n * (n + 1) / N_zc)
+
+    return zc_seq
 

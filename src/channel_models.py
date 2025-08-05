@@ -1,18 +1,13 @@
 # The channel models are defined here.
 from __future__ import division, print_function  # Python 2 compatibility
 
-from functools import partial
-
 import torch
-import math
 import numpy as np
 
-from numpy import abs, sqrt, sum, zeros, identity, hstack, einsum, trace, kron, absolute, fromiter, array, exp, \
-    pi, cos
-from numpy.random import randn, random, standard_normal
-from scipy.linalg import sqrtm, cholesky
-from scipy.integrate import quad_vec
+
 import scipy.integrate as spi
+import sys
+sys.path.append('src')
 import utils_standard_codec
 
 
@@ -55,9 +50,6 @@ def ch_corr_Rayleigh_by_cov(x, cov, noise_std, device, decomposition_method='eig
         h = h.view(bs, n)
 
         y_c = h * x
-        #    x_r = torch.view_as_real(h)
-        #    print(torch.std(x_r[:,:,0]) ** 2)
-        #    print(torch.std(x_r[:,:,1]) ** 2)
 
         if isinstance(noise_std, torch.Tensor):
             noise_r = torch.normal(mean=0, std= noise_std).to(device)
@@ -110,25 +102,13 @@ def ch_Rayleigh_uncorrelated(x, noise_std, device):
 
     return y_c, h
 
+
 def ch_AWGN(x, noise_std, device):
     x = x.to(device)
 
     y_c = x + torch.normal(mean=0, std= noise_std, size=x.size(), dtype=torch.cfloat).to(device)
 
     return y_c, None
-
-def ch_Rayleigh(ch_input, h_std, noise_std, device):
-    # y = hx + z
-    # The diagonal element of H follows a Rayleigh distribution.
-
-    ch_input = ch_input.to(device)
-    h = torch.normal(mean=0, std=h_std, size=ch_input.size(), dtype=torch.cfloat).to(device)  # fading complex Gaussian
-    z = torch.normal(mean=0, std=2 ** 0.5 * noise_std, size=ch_input.size(), dtype=torch.cfloat).to(device)  # AWGN
-
-    ch_output = torch.zeros_like(ch_input).to(device)
-    ch_output = torch.mul(h, ch_input) + z
-
-    return ch_output, h
 
 
 def sinc_pulse(t, T=1.0):
@@ -199,47 +179,6 @@ def construct_Toeplitz_matrix(N, P, h, tau, T):
     return G
 
 
-def construct_Toeplitz_matrices(N, P, h_batch, tau_batch, T):
-    """
-    Constructs a sequence of N x N Toeplitz matrices for batched (h, tau) pairs.
-
-    Parameters:
-    N        : int - Size of the matrix (N x N)
-    P        : int - Number of paths (Pc or Ps)
-    h_batch  : list of lists - Channel coefficients for each batch
-    tau_batch: list of lists - Delays for each batch
-    T        : float - Symbol period
-
-    Returns:
-    List of N x N numpy Toeplitz matrices (one for each batch entry)
-    """
-
-    def g_m_minus_n(P, h, tau, T, delta):
-        # Define the function that computes g_{m-n} given P, h, tau, T, and delta
-        # (Implementation assumed to be available)
-        pass
-
-    batch_size = len(h_batch)
-    toeplitz_matrices = []
-
-    for i in range(batch_size):
-        h = h_batch[i]
-        tau = tau_batch[i]
-
-        # Compute g_{m-n} only for unique values of (m-n)
-        unique_g = {delta: g_m_minus_n(P, h, tau, T, delta) for delta in range(-(N - 1), N)}
-
-        # Construct the Toeplitz matrix using these precomputed values
-        G = np.zeros((N, N), dtype=complex)
-        for m in range(N):
-            for n in range(N):
-                G[m, n] = unique_g[m - n]  # Assign based on (m-n)
-
-        toeplitz_matrices.append(G)
-
-    return toeplitz_matrices
-
-
 def Toeplitz_channel(input, P, T, h_mean=0+0j, h_var=1, N0=1, tau_max=[2], without_output=False):
     """
     Gives the channel output of the given input for defined Toeplitz channel model.
@@ -287,7 +226,48 @@ def Toeplitz_channel(input, P, T, h_mean=0+0j, h_var=1, N0=1, tau_max=[2], witho
     return y, h, tau
 
 
+'''
 
+def construct_Toeplitz_matrices(N, P, h_batch, tau_batch, T):
+    """
+    Constructs a sequence of N x N Toeplitz matrices for batched (h, tau) pairs.
+
+    Parameters:
+    N        : int - Size of the matrix (N x N)
+    P        : int - Number of paths (Pc or Ps)
+    h_batch  : list of lists - Channel coefficients for each batch
+    tau_batch: list of lists - Delays for each batch
+    T        : float - Symbol period
+
+    Returns:
+    List of N x N numpy Toeplitz matrices (one for each batch entry)
+    """
+
+    def g_m_minus_n(P, h, tau, T, delta):
+        # Define the function that computes g_{m-n} given P, h, tau, T, and delta
+        # (Implementation assumed to be available)
+        pass
+
+    batch_size = len(h_batch)
+    toeplitz_matrices = []
+
+    for i in range(batch_size):
+        h = h_batch[i]
+        tau = tau_batch[i]
+
+        # Compute g_{m-n} only for unique values of (m-n)
+        unique_g = {delta: g_m_minus_n(P, h, tau, T, delta) for delta in range(-(N - 1), N)}
+
+        # Construct the Toeplitz matrix using these precomputed values
+        G = np.zeros((N, N), dtype=complex)
+        for m in range(N):
+            for n in range(N):
+                G[m, n] = unique_g[m - n]  # Assign based on (m-n)
+
+        toeplitz_matrices.append(G)
+
+    return toeplitz_matrices
+    
 class _FlatChannel(object):
 
     def __init__(self):
@@ -491,7 +471,7 @@ class CorrRayleighChannel(_FlatChannel):
         self.unnoisy_output = self.channel_gains * msg
 
         return self.unnoisy_output + self.noises
-    '''
+    
     @property
     def fading_param(self):
         """ Parameters of the fading (see class attribute for details). """
@@ -509,4 +489,5 @@ class CorrRayleighChannel(_FlatChannel):
     def k_factor(self):
         """ Read-only - Fading k-factor, the power ratio between LOS and NLOS """
         return absolute(self.fading_param[0]) ** 2 / absolute(self.fading_param[1])
-    '''
+    
+'''

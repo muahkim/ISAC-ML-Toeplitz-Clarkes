@@ -1,11 +1,16 @@
 import sys
+import torch
+import math
+from functools import partial
 
+from datetime import datetime
 # Own libraries
 sys.path.append('src')
-from src.utils_plot import *
+
 from src.get_args import get_args
 from src.utils_standard_codec import test_ER_CC_Mod_batched
 import src.utils_standard_codec as utils_standard_codec
+from src.channel_models import *
 
 #########################################
 # Turbo AE requires additional arguments and use arguments. All can be turned on by TURBO flag in the source code.
@@ -13,6 +18,8 @@ import src.utils_standard_codec as utils_standard_codec
 
 args = get_args()
 print(args)
+
+timestamp=datetime.now().strftime("%m%d%H%M%S")
 
 ###############################################
 # Set the device to train
@@ -49,7 +56,7 @@ else:
     M_mod = int( 2**(rate_total / rate) )
 
 batch_size = args.batch_size
-dataset_size = 10 ** 6
+dataset_size = 10 ** 8
 
 ###############################################
 # Channels are defined by the given parameters
@@ -64,7 +71,7 @@ print(f"Normalized Doppler freqency: {f_dopp_norm}\n")
 print("Sensing Channel")
 print(f"Number of paths: {P}, Random Delay~U[0, {tau_max * 1e+9:.4}] ns.\n")
 
-cov = utils_standard_codec.Rayleigh_covariance_generator(n, f_dopp_norm, dtype_cov=torch.cfloat)
+cov = utils_standard_codec.Rayleigh_covariance_generator(90+1, f_dopp_norm, dtype_cov=torch.cfloat)
 
 channel_c = partial(ch_corr_Rayleigh_by_cov, cov=cov, device=device, decomposition_method='eigenvector')
 channel_s = partial(Toeplitz_channel, P=P, T=T,
@@ -81,7 +88,7 @@ BER_list = test_ER_CC_Mod_batched(n, M_mod, channel_c, snrs, k=k, code_rate=1/ra
 print(snrs)
 print(BER_list)
 
-file_tag = f"_k{k:d}N{n:d}_f{f_dopp_norm:.3f}_P{P}_taumax{tau_max}_CC-{M_mod}{mod_type}"
+file_tag = f"_k{k:d}N{n:d}_f{f_dopp_norm:.3f}_P{P}_taumax{tau_max}_CC-{M_mod}{mod_type}_{timestamp}"
 
 with open(f'test_results/{file_tag}.txt', 'w') as f:
     f.write('SNR\t')
