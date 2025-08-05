@@ -38,8 +38,8 @@ dec_kernel_size: 5
 enc_num_layer: 2
 enc_num_output_dim: 1
 dec_num_layer: 5
-dec_num_unit: 150
-enc_num_unit: 150
+dec_num_unit: 60
+enc_num_unit: 60
 enc_act: elu
 dec_act: linear
 num_ber_puncture: 5
