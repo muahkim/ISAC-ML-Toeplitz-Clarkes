@@ -41,8 +41,7 @@ class TrainerConfig:
     num_train_enc = 1
     num_train_dec = 5
     loss_c = 'decoder'
-    loss_r = 'MCLB' 
-    only_groundtruth = True
+    loss_r = 'MCRB'
 
     LOADMODEL = False
     MLD = False
@@ -81,7 +80,7 @@ class TrainerConfig:
 
         # Sanity Check
         assert len(self.lr_enc) == len(self.max_epochs), "The length of lr and max_epochs should be the same."
-        assert self.training_strategy in {'joint_training', 'iterative_training','likelihood_training'}, "training_strategy value is not supported. Available options: joint_training, iterative_training, likelihood_training, likelihood_training."
+        assert self.training_strategy in {'joint_training', 'iterative_training'}, "training_strategy value is not supported. Available options: joint_training, iterative_training."
 
         self.cov = utils_standard_codec.Rayleigh_covariance_generator(self.n, self.f_dopp_norm, dtype_cov=torch.cfloat)
         plt.imshow(self.cov.real, cmap='hot')  # , interpolation='nearest')
@@ -237,20 +236,13 @@ class Trainer:
                     # Sample noise standard deviation uniformly between the start and the end point.
                     y_c, h_c = self.channel_c(x_, noise_std=noise_std)
 
-                    if train_mode in {"enc", "enc-dec"}:
-                        # Maximum-Likelihood Decoding
-                        loglikelihood, _ = self.MLDetector(y_c,
-                                                           x_, only_groundtruth = config.args.only_groundtruth, noise_std=noise_std) # likelihood of the correct message.
-                        loss_c = - loglikelihood # equivalent to the binary cross entropy.
-
-                    elif config.loss_c == 'decoder' or train_mode == "dec":
-                        if turbo_original_structure:
-                            y_c_real = (torch.transpose(torch.view_as_real(y_c), 1,2).contiguous()).reshape(bs, config.args.block_len, config.args.code_rate_n*config.args.enc_num_output_dim)
-                        else:
-                            y_c_real = torch.view_as_real(y_c).reshape(bs, config.args.block_len, config.args.code_rate_n*config.args.enc_num_output_dim)
-                        m_hat = dec(y_c_real)
-                        m_hat = torch.clamp(m_hat, 0.0, 1.0)
-                        loss_c = customized_loss(m_hat, m, config.args)
+                    if turbo_original_structure:
+                        y_c_real = (torch.transpose(torch.view_as_real(y_c), 1,2).contiguous()).reshape(bs, config.args.block_len, config.args.code_rate_n*config.args.enc_num_output_dim)
+                    else:
+                        y_c_real = torch.view_as_real(y_c).reshape(bs, config.args.block_len, config.args.code_rate_n*config.args.enc_num_output_dim)
+                    m_hat = dec(y_c_real)
+                    m_hat = torch.clamp(m_hat, 0.0, 1.0)
+                    loss_c = customized_loss(m_hat, m, config.args)
 
                     loss_c = loss_c.mean()
 

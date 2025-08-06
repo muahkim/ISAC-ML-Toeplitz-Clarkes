@@ -12,11 +12,9 @@ def get_args():
                         help='normalized Doppler frequency. If 1, uncorrelated fading. If 0, fully correlated.')
     parser.add_argument('-loss_ratio_c_to_r', type=float, default=1,
                         help='loss ratio between communication and sensing. 1 means training only for communication and 0 means training only for sensing.')
-    parser.add_argument('-training_strategy', choices=['likelihood_training', 'iterative_training', 'joint_training'], default='likelihood_training',
+    parser.add_argument('-training_strategy', choices=['iterative_training', 'joint_training'], default='iterative_training',
                         help='Training algorithms.')
-    parser.add_argument('-only_groundtruth', type=lambda x: x.lower() in ['true', '1', 'yes'], default=True,
-                        help='For maximum likelihood decoding, when only_groundtruth is true, only the likelihood of the groundtruth is calculated..')
-    parser.add_argument('-loss_r', choices=['MCLB', 'CRLB'], default='MCLB',
+    parser.add_argument('-loss_r', choices=['MCRB', 'CRLB'], default='MCRB',
                         help='Loss function of sensing.')
     parser.add_argument('-P', type=int, default=1,
                         help='Number of dealy paths in sensing channel.')
