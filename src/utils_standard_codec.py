@@ -2,17 +2,41 @@ import numpy as np
 import sys
 import scipy
 import math
+import types
 
 assert sys.version_info >= (3, 5)
 np.random.seed(42)
 
 sys.path.append('src/')
-from utils import *
-import utils
-from channel_models import *
+try:
+    from .utils import *
+    from . import utils
+    from .channel_models import *
+except ImportError:
+    from utils import *
+    import utils
+    from channel_models import *
 
-import commpy.channelcoding.convcode as cc
-import commpy.modulation as modulation
+try:
+    import commpy.channelcoding.convcode as cc
+    import commpy.modulation as modulation
+except ModuleNotFoundError:
+    class MissingCommpyDependency:
+        def __init__(self, *args, **kwargs):
+            raise ModuleNotFoundError("commpy is required for this codec path.")
+
+    def missing_commpy_function(*args, **kwargs):
+        raise ModuleNotFoundError("commpy is required for this codec path.")
+
+    cc = types.SimpleNamespace(
+        Trellis=MissingCommpyDependency,
+        conv_encode=missing_commpy_function,
+        viterbi_decode=missing_commpy_function,
+    )
+    modulation = types.SimpleNamespace(
+        PSKModem=MissingCommpyDependency,
+        QAMModem=MissingCommpyDependency,
+    )
 
 def cc_encoder(input_bits, code_rate=3, termination='term'):
     # Memory elements per input bit (K-1)
@@ -208,9 +232,11 @@ def modulator(bit_seq, M_mod, mod_type):
     return modulated_symb
 
 
-def demodulator(received_seq, M_mod, mod_type, noise_std=None):
+def demodulator(received_seq, M_mod, mod_type, noise_std=None, GLRT=False):
     ## Define demodulator
     if mod_type in {'PSK', 'DPSK'} :
+        if GLRT:
+            assert M_mod == 2 and mod_type == 'PSK', "GLRT detection is supported only for BPSK."
         modem = modulation.PSKModem(M_mod)  # M-PSK modem initialization
     elif mod_type == 'QAM':
         modem = modulation.QAMModem(M_mod)
@@ -222,7 +248,10 @@ def demodulator(received_seq, M_mod, mod_type, noise_std=None):
     return modem.demodulate(received_seq, 'hard')
 
 
-def test_ER_CC_Mod_batched(n, M_mod, channel_model, snr_range, k, code_rate=3, num_samples=10 ** 8, batch_size=10 ** 4, mod_type='PSK', uncoded=False):
+def test_ER_CC_Mod_batched(n, M_mod, channel_model, snr_range, k, code_rate=3, num_samples=10 ** 8, batch_size=10 ** 4,
+                           mod_type='PSK', uncoded=False, GLRT=False, block_length=None):
+    if block_length == None:
+        block_length = n
     num_batches = num_samples // batch_size
     BER_per_SNR = []
 
@@ -239,10 +268,10 @@ def test_ER_CC_Mod_batched(n, M_mod, channel_model, snr_range, k, code_rate=3, n
         BER_list = []
         for it in range(num_batches):
             if uncoded:
-                BER_batch = test_ER_Mod(n, M_mod, channel_model, noise_std, k, num_samples=batch_size, mod_type=mod_type, modulation_table=modulation_table)
+                BER_batch = test_ER_Mod(n, M_mod, channel_model, noise_std, k, num_samples=batch_size, mod_type=mod_type, modulation_table=modulation_table, GLRT=GLRT)
             else:
                 BER_batch = test_ER_CC_Mod(n, M_mod, channel_model, noise_std, k, code_rate=code_rate,
-                                       num_samples=batch_size, mod_type=mod_type, modulation_table=modulation_table)
+                                       num_samples=batch_size, mod_type=mod_type, modulation_table=modulation_table, GLRT=GLRT, block_length=block_length)
 
             BER_list.append(BER_batch)
             BER_array = np.array(BER_list)
@@ -261,10 +290,14 @@ def test_ER_CC_Mod_batched(n, M_mod, channel_model, snr_range, k, code_rate=3, n
     return BER_per_SNR
 
 
-def test_ER_CC_Mod(n, M_mod, channel_model, noise_std, k, code_rate=3, num_samples=10 ** 6, mod_type='PSK', modulation_table=None, interleaving=False, termination='term'):
+def test_ER_CC_Mod(n, M_mod, channel_model, noise_std, k, code_rate=3, num_samples=10 ** 6, mod_type='PSK',
+                   modulation_table=None, interleaving=False, termination='term', GLRT=False, block_length=None):
     # Generate a random input sequence
     np.random.seed(43)
     rng = np.random.default_rng(43)
+
+    if block_length == None:
+        block_length = n
 
     k_threshold = 24
     if k < k_threshold:
@@ -307,7 +340,7 @@ def test_ER_CC_Mod(n, M_mod, channel_model, noise_std, k, code_rate=3, num_sampl
 
     # pad zeros to match the shape to be multiple of the block lengths
     encoded_len = encoded_bits.shape[0]
-    padded_len = (encoded_len // n + 1) * n
+    padded_len = (encoded_len // block_length + 1) * block_length
     pad_length = padded_len - encoded_len
 
     encoded_bits = np.concatenate([encoded_bits, np.zeros((pad_length,), dtype=int)])
@@ -316,9 +349,9 @@ def test_ER_CC_Mod(n, M_mod, channel_model, noise_std, k, code_rate=3, num_sampl
     modulated_symb = modulator(encoded_bits, M_mod, mod_type)
     modulated_symb = zero_small_parts(modulated_symb)
     if mod_type == 'DPSK':
-        modulated_symb = differential_encode(modulated_symb, n + 1)
+        modulated_symb = differential_encode(modulated_symb, block_length + 1)
     else:
-        modulated_symb = np.reshape(modulated_symb, (-1, n))
+        modulated_symb = np.reshape(modulated_symb, (-1, block_length))
     modulated_symb_torch = torch.from_numpy(modulated_symb)
 
     # Channel
@@ -330,7 +363,7 @@ def test_ER_CC_Mod(n, M_mod, channel_model, noise_std, k, code_rate=3, num_sampl
     if mod_type == 'DPSK':
         demodulated_bits = differential_decode_mpsk(received_symb_scale_back, M_mod, n + 1, modulation_table)
     else:
-        demodulated_bits = demodulator(received_symb_scale_back, M_mod, mod_type, noise_std=noise_std)
+        demodulated_bits = demodulator(received_symb_scale_back, M_mod, mod_type, noise_std=noise_std, GLRT=GLRT)
     demodulated_bits = np.reshape(demodulated_bits, (-1,))
     demodulated_bits = demodulated_bits[:encoded_len] # Cut out the zero paddings.
 
@@ -504,4 +537,3 @@ def zadoff_chu_seq(u, N_zc):
         zc_seq = np.exp(-1j * np.pi * u * n * (n + 1) / N_zc)
 
     return zc_seq
-

@@ -10,6 +10,10 @@ def get_args():
                         help='ture, 1, or yes is using TurboAE, anything else is using one-hot AE.')
     parser.add_argument('-f_Dn', type=float, default=1,
                         help='normalized Doppler frequency. If 1, uncorrelated fading. If 0, fully correlated.')
+    parser.add_argument('-f_Dn_l', nargs='+', type=float, default=1,
+                        help='list of normalized Doppler frequency. If 1, uncorrelated fading. If 0, fully correlated.')
+    parser.add_argument('-f_Dn_load', type=float, default=None,
+                        help='normalized Doppler frequency that the loaded model is trained for. If 1, uncorrelated fading. If 0, fully correlated.')
     parser.add_argument('-loss_ratio_c_to_r', type=float, default=1,
                         help='loss ratio between communication and sensing. 1 means training only for communication and 0 means training only for sensing.')
     parser.add_argument('-training_strategy', choices=['iterative_training', 'joint_training'], default='iterative_training',
@@ -71,7 +75,7 @@ def get_args():
                         default = 'toeplitz')
 
     # Modulation Type (Testing classical approach)
-    parser.add_argument('-mod_type', choices=['PSK', 'DPSK', 'ASK', 'ZC'], default='PSK')
+    parser.add_argument('-mod_type', choices=['PSK', 'DPSK', 'ASK', 'ZC', 'OOK'], default='PSK')
 
     # Channel parameters
     parser.add_argument('-vv',type=float, default=5, help ='only for t distribution channel')

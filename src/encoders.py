@@ -9,6 +9,7 @@ from numpy import arange
 from numpy.random import mtrand
 import math
 import numpy as np
+import types
 
 from interleavers import Interleaver
 from utils import snr_db2sigma
@@ -774,9 +775,21 @@ class ENC_TurboCode(ENCBase):
         turbo_code = turbo_code_now.to(self.this_device)
         return turbo_code
 
-import commpy.channelcoding.turbo as turbo
-import commpy.channelcoding.convcode as cc
-import commpy.channelcoding.interleavers as RandInterlv
+try:
+    import commpy.channelcoding.turbo as turbo
+    import commpy.channelcoding.convcode as cc
+    import commpy.channelcoding.interleavers as RandInterlv
+except ModuleNotFoundError:
+    class MissingCommpyDependency:
+        def __init__(self, *args, **kwargs):
+            raise ModuleNotFoundError("commpy is required for the Turbo_rate3 encoder path.")
+
+    def missing_commpy_function(*args, **kwargs):
+        raise ModuleNotFoundError("commpy is required for the Turbo_rate3 encoder path.")
+
+    turbo = types.SimpleNamespace(turbo_encode=missing_commpy_function)
+    cc = types.SimpleNamespace(Trellis=MissingCommpyDependency)
+    RandInterlv = types.SimpleNamespace(RandInterlv=MissingCommpyDependency)
 
 # only support rate 1/3 turbo code.
 def turbo_enc(X_train_raw, args, p_array):

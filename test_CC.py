@@ -41,8 +41,9 @@ tau_max = 2 * args.T  # maximum delay of paths. Delay follows a uniform distribu
 
 
 k = args.block_len * args.code_rate_k
-
+block_length = 9
 M_mod = 2
+GLRT = True
 mod_type = args.mod_type #'DPSK'
 
 if mod_type == 'ASK':
@@ -63,19 +64,19 @@ dataset_size = 10 ** 8
 ###############################################
 
 print("System Parameters")
-print(f"Block Length: {n}, Bit Sequence Length: {k}, Rate: {k/n:.2} (bits/symbol)\n")
+print(f"Code Length: {n}, Bit Sequence Length: {k}, Rate: {k/n:.2} (bits/symbol)\n")
 
 print("Communication Channel")
-print(f"Normalized Doppler freqency: {f_dopp_norm}\n")
+print(f"Normalized Doppler freqency: {f_dopp_norm}, Block Length: {block_length}\n")
 
 print("Sensing Channel")
 print(f"Number of paths: {P}, Random Delay~U[0, {tau_max * 1e+9:.4}] ns.\n")
 
-cov = utils_standard_codec.Rayleigh_covariance_generator(90+1, f_dopp_norm, dtype_cov=torch.cfloat)
+cov = utils_standard_codec.Rayleigh_covariance_generator(block_length, f_dopp_norm, dtype_cov=torch.cfloat)
 
 channel_c = partial(ch_corr_Rayleigh_by_cov, cov=cov, device=device, decomposition_method='eigenvector')
-channel_s = partial(Toeplitz_channel, P=P, T=T,
-                         tau_max=tau_max, without_output=True) # N0=2 * noise_std_r ** 2,
+#channel_s = partial(Toeplitz_channel, P=P, T=T,
+#                         tau_max=tau_max, without_output=True) # N0=2 * noise_std_r ** 2,
 
 if args.snr_points > 1:
     snr_interval = (args.snr_test_end - args.snr_test_start) * 1.0 / (args.snr_points - 1)
@@ -83,7 +84,7 @@ else:
     snr_interval = 0
 snrs = [snr_interval * item + args.snr_test_start for item in range(args.snr_points)]
 
-BER_list = test_ER_CC_Mod_batched(n, M_mod, channel_c, snrs, k=k, code_rate=1/rate, num_samples=dataset_size, batch_size=batch_size, mod_type=mod_type)
+BER_list = test_ER_CC_Mod_batched(n, M_mod, channel_c, snrs, k=k, code_rate=1/rate, num_samples=dataset_size, batch_size=batch_size, mod_type=mod_type, GLRT=GLRT, block_length=block_length)
 
 print(snrs)
 print(BER_list)

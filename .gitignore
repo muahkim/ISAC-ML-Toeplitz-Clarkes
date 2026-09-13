@@ -11,3 +11,9 @@ venv/
 # Ignore build artifacts
 /dist
 /build
+
+# Legacy local-only scripts
+test_MCRB.py
+MSE_sim_Brent*.py
+submit_MSE_sim_Brent*.sh
+js_*.sh

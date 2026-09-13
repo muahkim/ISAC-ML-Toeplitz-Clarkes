@@ -5,6 +5,7 @@ from numpy.random import mtrand
 
 # Own libraries
 sys.path.append('src')
+#import src.trainer_multiple_fD as trainer
 import src.trainer as trainer
 import src.models as models
 from src.utils import save_arguments_to_file, SNR_to_noise
@@ -56,7 +57,8 @@ auto_save = True            # If True, saving the trained models.
 # Generating covariance based on Clakre's model
 f_Dn = args.f_Dn            # In case Clarke's model used, the normalized Doppler frequency decides the covariance matrix for communication channel.
 f_dopp_norm = float(f_Dn)   # Define the covariance matrix for communication channel
-
+f_Dn_l = args.f_Dn_l
+f_dopp_norm =  float(f_Dn_l[0]) #f_Dn_l
 T = args.T                  # Symbol period
 P = args.P                  # number of paths in sensing channel
 tau_max = args.tau_max  # maximum delay of paths. Delay follows a uniform distribution U[0, tau_max].
@@ -140,7 +142,7 @@ t_conf = trainer.TrainerConfig(M=M, k=k, n=n, n_r=n_r, rate=rate, f_dopp_norm=f_
                             epoch_loaded_dec = milestone_to_load_dec, LOADMODEL=LOADMODEL,
                             max_epochs=ep_seq, dataset_size=dataset_size,
                             batch_size=batch_size, lr_enc=lr_seq,
-                            training_strategy=training_strategy,
+                            training_strategy=training_strategy, sensing_loss_scale=1000,
                             loss_ratio_c_to_r=loss_ratio_c_to_r,
                             auto_save=auto_save, path=path, device=device, args=args, generate_dataset=generate_dataset)
 

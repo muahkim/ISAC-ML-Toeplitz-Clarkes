@@ -23,6 +23,7 @@ class TrainerConfig:
     rate = math.log2(M) / n
     cov = torch.eye(n, n, dtype=torch.cfloat)
     f_dopp_norm = 0.1
+    f_dopp_norm_to_load = 0.1
 
     P = 10
     T = 1e-9
@@ -69,10 +70,10 @@ class TrainerConfig:
 
         ## File tag for distinguishing the files from this simulation.
         if self.loss_ratio_c_to_r <= 0.1 and self.loss_ratio_c_to_r > 0:
-            self.file_tag = f"_k{self.k:d}N{self.n:d}_f{self.f_dopp_norm:.3f}_P{self.P}_taumax{self.tau_max}_gamma{self.loss_ratio_c_to_r:.3f}_{self.args.encoder}_{self.args.decoder}_{self.training_strategy}"
+            self.file_tag = f"_k{self.k:d}N{self.n:d}_f{self.f_dopp_norm_to_load:.3f}_P{self.P}_taumax{self.tau_max}_gamma{self.loss_ratio_c_to_r:.3f}_{self.args.encoder}_{self.args.decoder}_{self.training_strategy}_tested_on_fD{self.f_dopp_norm:.3f}"
         else:
-            self.file_tag = f"_k{self.k:d}N{self.n:d}_f{self.f_dopp_norm:.3f}_P{self.P}_taumax{self.tau_max}_gamma{self.loss_ratio_c_to_r:.1f}_{self.args.encoder}_{self.args.decoder}_{self.training_strategy}"
-
+            self.file_tag = f"_k{self.k:d}N{self.n:d}_f{self.f_dopp_norm_to_load:.3f}_P{self.P}_taumax{self.tau_max}_gamma{self.loss_ratio_c_to_r:.1f}_{self.args.encoder}_{self.args.decoder}_{self.training_strategy}_tested_on_fD{self.f_dopp_norm:.3f}"
+        #self.file_tag = f"_k6N9_f[0.0, 0.1, 1.0]_P5_taumax[1.0, 2.0, 3.0, 5.0, 7.0]_gamma1.0_rate3_cnn_rate3_cnn_iterative_training"
 
         if self.args is not None:
             self.num_train_enc = self.args.num_train_enc
@@ -343,9 +344,10 @@ class Trainer:
                     optimizer = config.global_optimizer(enc.parameters(), lr=config.lr_enc[lr_count])
                     for i in range(config.num_train_enc):
                         loss_c_ep, loss_r_ep, loss_sum_ep = run_epoch(train_mode='enc')
-                    optimizer = config.global_optimizer(dec.parameters(), lr=config.lr_enc[lr_count])
-                    for j in range(config.num_train_dec):
-                        loss_c_ep, loss_r_ep, loss_sum_ep = run_epoch(train_mode='dec')
+                    if config.loss_ratio_c_to_r > 0:
+                        optimizer = config.global_optimizer(dec.parameters(), lr=config.lr_enc[lr_count])
+                        for j in range(config.num_train_dec):
+                            loss_c_ep, loss_r_ep, loss_sum_ep = run_epoch(train_mode='dec')
 
                 loss_c_list.append(loss_c_ep); loss_r_list.append(loss_r_ep); loss_sum_list.append(loss_sum_ep)
                 if (epoch_global+1) % 50 == 0:
@@ -373,11 +375,7 @@ class Trainer:
         if noise_std==None:
             noise_std = self.config.args.snr_points
 
-        if config.loss_r == 'MCRB':
-            loss_fn_r = utils.MCRB_mean
-        elif config.loss_r == 'CRLB':
-            loss_fn_r = utils.CRLB_mean
-        else:
+        if config.loss_r not in {'MCRB', 'CRLB'}:
             raise ValueError(config.loss_r)
         #line_plots_Enc(enc, M, args=config.args, path=f"{config.path_figures}/Line_plots{config.file_tag}.pdf")
         # To make the dataset batched
@@ -452,16 +450,18 @@ class Trainer:
             m_hat = torch.clamp(m_hat, 0.0, 1.0)
 
             # Sensing channel
-            # Sensing Loss.
+            # Sensing lower bound. Use the shared NumPy CRLB/MCRB implementation
+            # from src.utils so test.py matches scripts/compare_crlb_mcrb.py.
             if True: #config.args.loss_ratio_c_to_r < 1:
                 y_r, h_s_a, tau_s_a = self.channel_s(x_, N0= 2 * noise_std ** 2)
 
-                # Backward pass for estimator
-                loss_r = []
-                for p in range(self.config.P):
-                    loss_r.append( loss_fn_r(2 * noise_std ** 2, h_s_a[:, p], x_, tau_s_a[:, p], config.T).cpu().detach().numpy() )
-
-                loss_r = np.hstack(np.array(loss_r))
+                loss_r = utils.sensing_bound_per_path_mean(
+                    2 * noise_std ** 2,
+                    x_,
+                    tau_s_a,
+                    config.T,
+                    bound_type=config.loss_r,
+                )
                 loss_batch_r.append(loss_r)
             else:
                 loss_batch_r.append(0)

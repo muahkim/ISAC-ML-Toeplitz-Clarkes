@@ -10,7 +10,10 @@ from torch.utils.data.dataloader import DataLoader
 
 np.random.seed(42)
 from tqdm import tqdm
-from utils_standard_codec import *
+try:
+    from .utils_standard_codec import *
+except ImportError:
+    from utils_standard_codec import *
 
 def approx_standard_normal_cdf(x):
     return 0.5 * (1.0 + torch.tanh(torch.tensor(np.sqrt(2.0 / np.pi)) * (x + 0.044715 * torch.pow(x, 3))))
@@ -824,10 +827,22 @@ def FIM_diag_Toeplitz_delay(N0, h_s_a, x, tau_s_a, T):
     return coeff * summation  # (batch_size,)
 
 
-def CRLB_mean(N0, h_s_a, x, tau_s_a, T, eps=1e-6):
+def CRLB_mean_legacy_differentiable(N0, h_s_a, x, tau_s_a, T, eps=1e-6):
+    """
+    Legacy per-path CRLB used by training and the old Trainer.test path.
+
+    This stays torch-based and differentiable with respect to x, so it can still
+    be used as a future sensing training objective. The newer Trainer.test CRLB
+    reporting path uses marginalized_covariance_crlb_for_tau instead.
+    """
     J_aa = 1 / ( FIM_diag_Toeplitz_delay(N0, h_s_a, x, tau_s_a, T) + eps )
     CRLB = torch.mean(J_aa) # Miller Chang bound # normalization added.
     return CRLB
+
+
+def CRLB_mean(N0, h_s_a, x, tau_s_a, T, eps=1e-6):
+    return CRLB_mean_legacy_differentiable(N0, h_s_a, x, tau_s_a, T, eps=eps)
+
 
 def MCRB_mean(N0, dummy, x, tau_s_a, T, eps=1e-6):
     num_samples = x.size(0)
@@ -835,6 +850,256 @@ def MCRB_mean(N0, dummy, x, tau_s_a, T, eps=1e-6):
     J_aa = 1 / ( FIM_diag_Toeplitz_delay(N0, h_s_a, x, tau_s_a, T) + eps )
     MCRB = torch.mean(J_aa) # Miller Chang bound # normalization added.
     return MCRB
+
+
+def sinc_derivative_numpy(u):
+    derivative = np.zeros_like(u, dtype=float)
+    mask = np.abs(u) >= 1e-6
+    u_safe = u[mask]
+    derivative[mask] = (
+        np.cos(np.pi * u_safe) / u_safe
+        - np.sin(np.pi * u_safe) / (np.pi * u_safe ** 2)
+    )
+    return derivative
+
+
+def build_shifted_pilot_and_derivative(tau_abs, x, T):
+    x = np.asarray(x, dtype=complex).reshape(-1)
+    N = x.size
+    tau_norm = float(tau_abs) / T
+
+    row = np.arange(N, dtype=float).reshape(N, 1)
+    col = np.arange(N, dtype=float).reshape(1, N)
+    arg = row - col - tau_norm
+
+    H = np.sinc(arg)
+    dH_dtau_norm = -sinc_derivative_numpy(arg)
+    return H @ x, dH_dtau_norm @ x
+
+
+def marginalized_covariance_crlb_for_tau(tau_abs, x, T, N0):
+    tau_abs = np.asarray(tau_abs, dtype=float).reshape(-1)
+    P = tau_abs.size
+    N = len(x)
+
+    A = np.empty((N, P), dtype=complex)
+    dA = np.empty((N, P), dtype=complex)
+    for idx, tau in enumerate(tau_abs):
+        A[:, idx], dA[:, idx] = build_shifted_pilot_and_derivative(tau, x, T)
+
+    gram = A.conj().T @ A
+    small_inverse = np.linalg.inv(np.eye(P, dtype=complex) + gram / float(N0))
+    sigma_inverse = (
+        np.eye(N, dtype=complex) / float(N0)
+        - (A @ small_inverse @ A.conj().T) / (float(N0) ** 2)
+    )
+
+    sigma_derivatives = []
+    for idx in range(P):
+        a = A[:, idx]
+        da = dA[:, idx]
+        sigma_derivatives.append(
+            np.outer(da, a.conj()) + np.outer(a, da.conj())
+        )
+
+    solved = [sigma_inverse @ sigma_i for sigma_i in sigma_derivatives]
+    fim = np.empty((P, P), dtype=float)
+    for i in range(P):
+        for j in range(i, P):
+            value = np.trace(solved[i] @ solved[j])
+            fim[i, j] = float(np.real(value))
+            fim[j, i] = fim[i, j]
+
+    crlb_norm = np.linalg.inv(fim)
+    crlb_per_path = (T ** 2) * np.real(np.diag(crlb_norm))
+    crlb_mean = float(np.mean(crlb_per_path))
+    return crlb_mean, fim, crlb_per_path
+
+
+def mcrb_per_path_for_tau(N0, x, tau_abs, T, eps=1e-6):
+    tau_abs = np.asarray(tau_abs, dtype=float).reshape(-1)
+    return np.asarray([
+        (T ** 2) / (
+            fim_diag_toeplitz_delay_mcrb_numpy(N0, x, tau, T) + eps
+        )
+        for tau in tau_abs
+    ], dtype=float)
+
+
+def fim_diag_toeplitz_delay_mcrb_numpy(N0, x, tau_abs, T):
+    x = np.asarray(x, dtype=complex).reshape(-1)
+    N = x.size
+    tau_norm = float(tau_abs) / T
+
+    m_idx = np.arange(1, N + 1, dtype=float).reshape(N, 1)
+    n_idx = np.arange(1, N + 1, dtype=float).reshape(1, N)
+    sinc_arg = m_idx - n_idx - tau_norm
+    sinc_deriv = -sinc_derivative_numpy(sinc_arg)
+    inner_sum = np.sum(x.reshape(1, N) * sinc_deriv, axis=-1)
+    derivative_energy = np.sum(np.abs(inner_sum) ** 2)
+    return (2.0 / float(N0)) * derivative_energy
+
+
+def fim_diag_toeplitz_delay_mcrb_torch(N0, x, tau_abs, T, device):
+    x_t = torch.as_tensor(x, dtype=torch.complex64, device=device).reshape(-1)
+    tau_t = torch.as_tensor(tau_abs, dtype=torch.float32, device=device).reshape(-1)
+    N = x_t.numel()
+
+    m_idx = torch.arange(1, N + 1, dtype=torch.float32, device=device).view(1, N, 1)
+    n_idx = torch.arange(1, N + 1, dtype=torch.float32, device=device).view(1, 1, N)
+    tau_norm = (tau_t / T).view(-1, 1, 1)
+
+    sinc_arg = m_idx - n_idx - tau_norm
+    sinc_deriv = -sinc_derivative(sinc_arg)
+    inner_sum = torch.sum(x_t.view(1, 1, N) * sinc_deriv, dim=-1)
+    derivative_energy = torch.sum(torch.abs(inner_sum) ** 2, dim=-1)
+
+    return (2.0 / N0) * derivative_energy
+
+
+def mcrb_mean_for_fixed_pilot_torch(N0, x, tau_abs, T, device, eps=1e-6):
+    with torch.no_grad():
+        fim_diag = fim_diag_toeplitz_delay_mcrb_torch(N0, x, tau_abs, T, device)
+        mcrb_normalized = torch.mean(1.0 / (fim_diag + eps)).item()
+    return (T ** 2) * mcrb_normalized
+
+
+def select_mcrb_device(device="auto"):
+    if device == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cuda" and not torch.cuda.is_available():
+        print("CUDA requested but unavailable; falling back to CPU.")
+        return "cpu"
+    return device
+
+
+def compute_mcrb_curve(cfg, x, L_norm, T, n_samples=100000, batch_size=1000, device="auto"):
+    rng = np.random.default_rng(cfg.rng_seed + 1000)
+    mcrb_per_snr = np.zeros(len(cfg.snr_db_grid), dtype=float)
+    device = select_mcrb_device(device)
+    print(f"Computing MCRB lower bound on {device}...")
+
+    for si, snr_db in enumerate(cfg.snr_db_grid):
+        snr_linear = 10 ** (float(snr_db) / 10.0)
+        N0 = 1.0 / snr_linear
+        path_bounds_abs = T * np.asarray(L_norm, dtype=float)
+        path_mcrbs = []
+
+        for tau_max_abs in path_bounds_abs:
+            samples_done = 0
+            weighted_sum = 0.0
+
+            while samples_done < n_samples:
+                current_batch = min(batch_size, n_samples - samples_done)
+                tau_abs = rng.uniform(low=0.0, high=tau_max_abs, size=current_batch)
+                try:
+                    batch_mcrb = mcrb_mean_for_fixed_pilot_torch(
+                        N0, x, tau_abs, T, device
+                    )
+                except RuntimeError as exc:
+                    if device == "cuda" and "out of memory" in str(exc).lower():
+                        torch.cuda.empty_cache()
+                        print("CUDA out of memory during MCRB batch; retrying this batch on CPU.")
+                        batch_mcrb = mcrb_mean_for_fixed_pilot_torch(
+                            N0, x, tau_abs, T, "cpu"
+                        )
+                    else:
+                        raise
+                weighted_sum += batch_mcrb * current_batch
+                samples_done += current_batch
+
+            path_mcrbs.append(weighted_sum / n_samples)
+
+        mcrb_per_snr[si] = np.mean(path_mcrbs)
+
+    return mcrb_per_snr
+
+
+def _to_numpy_array(value):
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().numpy()
+    return np.asarray(value)
+
+
+def _n0_to_float(N0):
+    if isinstance(N0, torch.Tensor):
+        return float(torch.mean(N0.detach().cpu()).item())
+    return float(np.mean(np.asarray(N0, dtype=float)))
+
+
+def sensing_bound_per_path_mean(N0, x, tau_s_a, T, bound_type="MCRB", eps=1e-6):
+    x_np = _to_numpy_array(x).astype(complex)
+    tau_np = _to_numpy_array(tau_s_a).astype(float)
+    if tau_np.ndim == 1:
+        tau_np = tau_np.reshape(-1, 1)
+    if x_np.ndim == 1:
+        x_np = x_np.reshape(1, -1)
+    if x_np.shape[0] != tau_np.shape[0]:
+        raise ValueError("x and tau_s_a must have the same batch dimension.")
+
+    n0_value = _n0_to_float(N0)
+    bound_type = bound_type.upper()
+    per_sample_bounds = []
+    failed_count = 0
+
+    for x_sample, tau_sample in zip(x_np, tau_np):
+        try:
+            if bound_type == "CRLB":
+                _, _, per_path = marginalized_covariance_crlb_for_tau(
+                    tau_sample, x_sample, T, n0_value
+                )
+            elif bound_type == "MCRB":
+                per_path = mcrb_per_path_for_tau(
+                    n0_value, x_sample, tau_sample, T, eps=eps
+                )
+            else:
+                raise ValueError("bound_type must be either CRLB or MCRB.")
+        except np.linalg.LinAlgError:
+            failed_count += 1
+            continue
+
+        if np.all(np.isfinite(per_path)) and np.all(per_path > 0):
+            per_sample_bounds.append(per_path)
+        else:
+            failed_count += 1
+
+    if not per_sample_bounds:
+        return np.full(tau_np.shape[1], np.nan, dtype=float)
+
+    if failed_count:
+        print(f"Warning: skipped {failed_count} invalid {bound_type} samples.")
+    return np.mean(np.vstack(per_sample_bounds), axis=0)
+
+
+def compute_marginalized_crlb_curve(cfg, x, T, L_norm, n_samples):
+    rng = np.random.default_rng(cfg.rng_seed)
+    L_norm = np.asarray(L_norm, dtype=float).reshape(-1)
+    crlb = np.full(len(cfg.snr_db_grid), np.nan, dtype=float)
+    valid_counts = np.zeros(len(cfg.snr_db_grid), dtype=int)
+    failed_counts = np.zeros(len(cfg.snr_db_grid), dtype=int)
+
+    for snr_idx, snr_db in enumerate(cfg.snr_db_grid):
+        snr_linear = 10 ** (float(snr_db) / 10.0)
+        N0 = 1.0 / snr_linear
+        values = []
+
+        for _ in range(n_samples):
+            tau_abs = T * rng.uniform(low=0.0, high=L_norm, size=L_norm.size)
+            try:
+                value, _, _ = marginalized_covariance_crlb_for_tau(tau_abs, x, T, N0)
+            except np.linalg.LinAlgError:
+                failed_counts[snr_idx] += 1
+                continue
+            if np.isfinite(value) and value > 0:
+                values.append(float(value))
+            else:
+                failed_counts[snr_idx] += 1
+
+        valid_counts[snr_idx] = len(values)
+        if values:
+            crlb[snr_idx] = float(np.mean(values))
+
+    return crlb, valid_counts, failed_counts
 
 
 

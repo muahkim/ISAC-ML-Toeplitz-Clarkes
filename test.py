@@ -51,6 +51,11 @@ auto_save = True            # If True, saving the trained models.
 f_Dn = args.f_Dn            # In case Clarke's model used, the normalized Doppler frequency decides the covariance matrix for communication channel.
 f_dopp_norm = float(f_Dn)   # Define the covariance matrix for communication channel
 
+if args.f_Dn_load == None:
+    f_dopp_norm_to_load = f_dopp_norm
+else:
+    f_dopp_norm_to_load = args.f_Dn_load
+
 T = args.T                  # Symbol period
 P = args.P                  # number of paths in sensing channel
 tau_max = args.tau_max  # maximum delay of paths. Delay follows a uniform distribution U[0, tau_max].
@@ -66,7 +71,7 @@ n = n_r // 2
 rate = args.code_rate_k / args.code_rate_n  # only the channel coding part without considering modulation atm.
 
 batch_size = args.batch_size
-dataset_size = batch_size * 100
+dataset_size = batch_size * 2000
 generate_dataset = False
 
 
@@ -126,6 +131,7 @@ print(f"Number of paths: {P}, Random Delay~U[0, tau_max*{T:.4e}], tau_max = {tau
 print(f"Training Strategy: {training_strategy}\n")
 
 t_conf = trainer.TrainerConfig(M=M, k=k, n=n, n_r=n_r, rate=rate, f_dopp_norm=f_dopp_norm,
+                               f_dopp_norm_to_load = f_dopp_norm_to_load,
                                snr=training_snr,
                                 P=P, T=T, tau_max=tau_max, epoch_loaded = milestone_to_load-1,
                                 epoch_loaded_dec = milestone_to_load_dec,
@@ -134,6 +140,7 @@ t_conf = trainer.TrainerConfig(M=M, k=k, n=n, n_r=n_r, rate=rate, f_dopp_norm=f_
                                 training_strategy=training_strategy,
                                 loss_ratio_c_to_r=loss_ratio_c_to_r, auto_save=auto_save,
                                 path=path, device=device, args=args, generate_dataset=generate_dataset)
+
 
 t_joint = trainer.Trainer(encoder, t_conf, dec=decoder)
 
@@ -165,7 +172,7 @@ for snr in snr_range:
 
     BER_list.append(BER); FER_list.append(FER); LB_list.append(LB_mean); LB_worst_list.append(LB_worst); LB_best_list.append(LB_best)
 
-with open(f'test_results/{t_conf.file_tag}_{t_conf.timestamp}.txt', 'w') as f:
+with open(f'test_results/{t_conf.file_tag}_tested_on_fD{f_dopp_norm}_{t_conf.timestamp}.txt', 'w') as f:
     f.write('SNR\t')
     f.write(','.join(f"{snr:.2f}" for snr in snr_range))
     f.write('\nBER\t')
